@@ -42,11 +42,12 @@
     "name": "98签到",
     "description": "98签到。",
     "labels": "工具",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png",
     "author": "thsrite",
     "level": 1,
     "history": {
+      "1.0.2": "修复默认值",
       "1.0.1": "修复问题",
       "v1.0": "98签到"
     }

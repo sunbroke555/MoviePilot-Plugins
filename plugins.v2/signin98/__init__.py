@@ -30,7 +30,7 @@ class SignIn98(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -271,7 +271,7 @@ class SignIn98(_PluginBase):
         formhash = soup.find('input', {'name': 'formhash'})['value']
         logger.info(f"获取到 {fid} 专区 {tid} 帖子formhash {formhash}")
 
-        message = random.choice(self._replies)
+        message = random.choice(self._replies.split("\n"))
         logger.info(f'获取到随机评论 {message}')
 
         wait_time = random.randint(10, 20)
@@ -743,40 +743,7 @@ class SignIn98(_PluginBase):
             "random_delay": '3-5',
             "fid": '2,36,103',
             "cron": "0 9 * * *",
-            "replies": [
-                '感谢分享',
-                '感谢分享!',
-                '感谢分享。',
-                '感谢楼主',
-                '感谢感谢',
-                '感谢感谢！',
-                '感谢感谢。',
-                '谢谢分享',
-                '谢谢楼主',
-                '感谢楼主分享',
-                '爱了爱了',
-                '感谢分享，楼主万岁！',
-                '爱了爱了！！！',
-                '赞！！！感谢',
-                '非常不错',
-                '支持支持,感谢分享',
-                '感谢楼主分享好片',
-                '感谢分享！！',
-                '感谢分享感谢分享',
-                '必须支持',
-                '感谢分享啊',
-                '封面还不错',
-                '谢谢！支持一波',
-                '看着不错，支持一波',
-                '真不错啊',
-                '不错不错',
-                '感謝分享',
-                '分享支持。',
-                '感谢大佬分享',
-                '看着不错',
-                '感谢老板分享',
-                '谢谢分享！！！',
-            ]
+            "replies": "感谢分享\n感谢分享!\n感谢分享。\n感谢楼主\n感谢感谢\n感谢感谢！\n感谢感谢。\n谢谢分享\n谢谢楼主\n感谢楼主分享\n爱了爱了\n感谢分享\n楼主万岁！\n爱了爱了！！！\n赞！！！\n感谢\n非常不错\n支持支持\n感谢分享\n感谢楼主分享好片\n感谢分享！！\n感谢分享感谢分享\n必须支持\n感谢分享啊\n封面还不错\n谢谢！支持一波\n看着不错\n支持一波\n真不错啊\n不错不错\n感謝分享\n分享支持。\n感谢大佬分享\n看着不错\n感谢老板分享\n谢谢分享！！！"
         }
 
     def get_page(self) -> List[dict]:
