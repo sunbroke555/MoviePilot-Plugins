@@ -79,10 +79,11 @@ class SignIn98(_PluginBase):
             self._ua = config.get("ua")
             self._onlyonce = config.get("onlyonce")
             self._history_days = config.get("history_days") or 30
-
+        
+        # 定时服务
+        self._scheduler = BackgroundScheduler(timezone=settings.TZ)
+ 
         if self._onlyonce:
-            # 定时服务
-            self._scheduler = BackgroundScheduler(timezone=settings.TZ)
             logger.info(f"98签到服务启动，立即运行一次")
             self._scheduler.add_job(func=self.__signin, trigger='date',
                                     run_date=datetime.now(tz=pytz.timezone(settings.TZ)) + timedelta(seconds=3),
