@@ -3,7 +3,7 @@
     "name": "云盘助手",
     "description": "本地文件定时转移到云盘，软连接/strm回本地，定时清理无效软连接。",
     "labels": "云盘",
-    "version": "2.1.5",
+    "version": "2.1.6",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png",
     "author": "thsrite",
     "level": 2,
