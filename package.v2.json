@@ -7,7 +7,6 @@
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png",
     "author": "thsrite",
     "level": 1,
-    "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAlgN7RtXlPNXoFE9B67ye\ny2mog/hDDrhBAIJogdvfAgBMZ1qVzIPcBfdjENPJ9kV/F+zOoh0CzEaDufM54ERT\nykK1pQw7yj7quRZDbv5byxVNqI8bJg8zQo8Q66SQ8SP+aftmpFrADKClQ8VcVYzZ\nJ+YDu9H9q+TcvBqVtLyKfAH5T9WAxn0bXEh4OgkJn7oO5eI5+Fsi6Aq9suVN/HyK\nz2bDr237GmXJT4YPn9s7kj4Rypzg2ldiuBwtVnaTw+xjZRlCRr4Gs0eFUIMUqnoQ\nip4Px8Mrq5cqHl0HrJ/av/pJLCN1icCgegYW63b2gjjJwmps9NGGOydRzgoFkqj0\nDwIDAQAB",
     "history": {
       "v2.2.1": "增加115Client上传",
       "v2.2": "适配v2多媒体服务器",
@@ -37,6 +36,18 @@
       "v1.2": "移除cd2上传",
       "v1.1": "支持cd2上传、支持定时清理无效软连接、支持strm生成方式",
       "v1.0": "定时移动到云盘，软连接回本地（清理无效软连接暂未开发）"
+    }
+  },
+  "SignIn98": {
+    "name": "98签到",
+    "description": "98签到。",
+    "labels": "工具",
+    "version": "1.0",
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png",
+    "author": "thsrite",
+    "level": 1,
+    "history": {
+      "v1.0": "98签到"
     }
   }
 }
