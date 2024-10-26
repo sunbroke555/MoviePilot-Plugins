@@ -739,7 +739,7 @@ class SignIn98(_PluginBase):
             "host": "sehuatang.org",
             "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "history_days": 30,
-            "random_delay": '3-5',
+            "random_delay": '60-3600',
             "fid": '2,36,103',
             "cron": "0 9 * * *",
             "replies": "感谢分享\n感谢分享!\n感谢分享。\n感谢楼主\n感谢感谢\n感谢感谢！\n感谢感谢。\n谢谢分享\n谢谢楼主\n感谢楼主分享\n爱了爱了\n感谢分享\n楼主万岁！\n爱了爱了！！！\n赞！！！\n感谢\n非常不错\n支持支持\n感谢分享\n感谢楼主分享好片\n感谢分享！！\n感谢分享感谢分享\n必须支持\n感谢分享啊\n封面还不错\n谢谢！支持一波\n看着不错\n支持一波\n真不错啊\n不错不错\n感謝分享\n分享支持。\n感谢大佬分享\n看着不错\n感谢老板分享\n谢谢分享！！！"
