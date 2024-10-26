@@ -680,8 +680,8 @@ class SignIn98(_PluginBase):
                                     {
                                         'component': 'VTextField',
                                         'props': {
-                                            'model': 'cookie',
-                                            'label': 'cookie'
+                                            'model': 'ua',
+                                            'label': 'user-agent'
                                         }
                                     }
                                 ]
@@ -701,8 +701,8 @@ class SignIn98(_PluginBase):
                                     {
                                         'component': 'VTextField',
                                         'props': {
-                                            'model': 'ua',
-                                            'label': 'user-agent'
+                                            'model': 'cookie',
+                                            'label': 'cookie'
                                         }
                                     }
                                 ]
