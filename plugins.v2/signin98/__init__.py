@@ -701,7 +701,7 @@ class SignIn98(_PluginBase):
                                         'component': 'VTextField',
                                         'props': {
                                             'model': 'cookie',
-                                            'label': 'cookie'
+                                            'label': '98 Cookie'
                                         }
                                     }
                                 ]
