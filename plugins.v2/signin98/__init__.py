@@ -738,7 +738,7 @@ class SignIn98(_PluginBase):
             "cookie": "",
             "host": "sehuatang.org",
             "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            "history_days": 30,
+            "history_days": 7,
             "random_delay": '60-3600',
             "fid": '2,36,103',
             "cron": "0 9 * * *",
