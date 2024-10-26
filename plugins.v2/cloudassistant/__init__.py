@@ -847,10 +847,12 @@ class CloudAssistant(_PluginBase):
         if target_file_115 and self._115_client:
             # 如果是文件夹
             if Path(target_file).is_dir():
-                self.__mkdir_115_path(target_file_115)
+                logger.info(f"检查并创建目标文件夹 {target_file}")
+                self._115_fs.makedirs(target_file_115, exist_ok=True)
                 return 1, None
             else:
-                self.__mkdir_115_path(str(Path(target_file_115).parent))
+                logger.info(f"检查并创建目标文件夹 {str(Path(target_file_115).parent)}")
+                self._115_fs.makedirs(str(Path(target_file_115).parent), exist_ok=True)
                 # 将文件上传到当前文件夹
                 self._115_fs.chdir(str(Path(target_file_115).parent))
                 cid = self._115_fs.getcid()
@@ -882,16 +884,6 @@ class CloudAssistant(_PluginBase):
                 logger.info(
                     f"媒体文件{str(file_path)} {transfer_type} 到 {target_file} {'成功' if retcode == 0 else '失败'} {retmsg}")
                 return retcode, None
-
-    def __mkdir_115_path(self, path):
-        """
-        创建115网盘路径
-        """
-        if not self._115_fs.exists(path):
-            if not self._115_fs.exists(str(Path(path).parent)):
-                self.__mkdir_115_path(str(Path(path).parent))
-            logger.info(f"创建目标文件夹 {path}")
-            self._115_fs.mkdir(path)
 
     def __transfer_command(self, file_item: Path, target_file: Path, transfer_type: str):
         """
