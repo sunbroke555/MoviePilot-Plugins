@@ -169,20 +169,20 @@ class SignIn98(_PluginBase):
                         title="【98签到任务完成】",
                         text=msg)
 
-                    # 读取历史记录
-                    history = self.get_data('history') or []
+                # 读取历史记录
+                history = self.get_data('history') or []
 
-                    history.append({
-                        "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
-                        "msg": msg
-                    })
+                history.append({
+                    "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
+                    "msg": msg
+                })
 
-                    thirty_days_ago = time.time() - int(self._history_days) * 24 * 60 * 60
-                    history = [record for record in history if
-                               datetime.strptime(record["date"],
-                                                 '%Y-%m-%d %H:%M:%S').timestamp() >= thirty_days_ago]
-                    # 保存签到历史
-                    self.save_data(key="history", value=history)
+                thirty_days_ago = time.time() - int(self._history_days) * 24 * 60 * 60
+                history = [record for record in history if
+                           datetime.strptime(record["date"],
+                                             '%Y-%m-%d %H:%M:%S').timestamp() >= thirty_days_ago]
+                # 保存签到历史
+                self.save_data(key="history", value=history)
             except Exception as e:
                 logger.error(f"错误原因：{str(e)}")
             finally:
