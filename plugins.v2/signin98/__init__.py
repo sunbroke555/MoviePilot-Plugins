@@ -30,7 +30,7 @@ class SignIn98(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png"
     # 插件版本
-    plugin_version = "1.0.2"
+    plugin_version = "1.0.3"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -56,9 +56,9 @@ class SignIn98(_PluginBase):
     _ua = None
     _replies = None
     # 签到成功文件
-    SIGN_SUCCESS_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sign_success.json")
+    SIGN_SUCCESS_FILE: str = None
     # 评论成功文件
-    COMMENT_SUCCESS_FILE: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "comment_success.json")
+    COMMENT_SUCCESS_FILE: str = None
 
     # 定时器
     _scheduler: Optional[BackgroundScheduler] = None
@@ -79,10 +79,15 @@ class SignIn98(_PluginBase):
             self._ua = config.get("ua")
             self._onlyonce = config.get("onlyonce")
             self._history_days = config.get("history_days") or 30
-        
+
+        # 签到成功文件
+        self.SIGN_SUCCESS_FILE: str = os.path.join(self.get_data_path(), "sign_success.json")
+        # 评论成功文件
+        self.COMMENT_SUCCESS_FILE: str = os.path.join(self.get_data_path(), "comment_success.json")
+
         # 定时服务
         self._scheduler = BackgroundScheduler(timezone=settings.TZ)
- 
+
         if self._onlyonce:
             logger.info(f"98签到服务启动，立即运行一次")
             self._scheduler.add_job(func=self.__signin, trigger='date',
