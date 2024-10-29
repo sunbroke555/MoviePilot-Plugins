@@ -478,6 +478,9 @@ class SignIn98(_PluginBase):
 
             raw_html = self.daysign(page)
 
+            if not raw_html:
+                return f"获取网站源码失败"
+
             if '签到成功' in raw_html:
                 message_text = raw_html
                 self.__sava_json(self.SIGN_SUCCESS_FILE)
