@@ -1,7 +1,6 @@
 import os
 import random
 import re
-import sys
 import traceback
 from pathlib import Path
 
@@ -30,7 +29,7 @@ class SignIn98(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png"
     # 插件版本
-    plugin_version = "1.0.3"
+    plugin_version = "1.1"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -55,6 +54,7 @@ class SignIn98(_PluginBase):
     _fid = None
     _ua = None
     _replies = None
+    _comment = None
     # 签到成功文件
     SIGN_SUCCESS_FILE: str = None
     # 评论成功文件
@@ -78,6 +78,7 @@ class SignIn98(_PluginBase):
             self._replies = config.get("replies")
             self._ua = config.get("ua")
             self._onlyonce = config.get("onlyonce")
+            self._comment = config.get("comment")
             self._history_days = config.get("history_days") or 30
 
         # 签到成功文件
@@ -107,6 +108,7 @@ class SignIn98(_PluginBase):
                 "ua": self._ua,
                 "history_days": self._history_days,
                 "random_delay": self._random_delay,
+                "comment": self._comment
             })
         else:
             try:
@@ -133,8 +135,6 @@ class SignIn98(_PluginBase):
             logger.info(f"随机延时 {random_delay} 秒")
             time.sleep(random_delay)
 
-        arguments = sys.argv
-
         with sync_playwright() as playwright:
             browser = playwright["chromium"].launch(headless=False)
             context = browser.new_context(user_agent=self._ua, proxy=settings.PROXY_SERVER)
@@ -146,12 +146,12 @@ class SignIn98(_PluginBase):
 
             try:
                 # 刷积分任务
-                if arguments and len(arguments) == 2:
-                    if str(arguments[1]).count("-") == 1:
-                        start_cnt, end_cnt = arguments[1].split("-")
+                if self._comment:
+                    if self._comment.count("-") == 1:
+                        start_cnt, end_cnt = self._comment.split("-")
                         comment_cnt = random.randint(int(start_cnt), int(end_cnt))
-                    elif str(arguments[1]).isdigit():
-                        comment_cnt = int(arguments[1])
+                    elif self._comment.isdigit():
+                        comment_cnt = int(self._comment)
                     else:
                         comment_cnt = 0
 
@@ -700,6 +700,24 @@ class SignIn98(_PluginBase):
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
+                                    'md': 4
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'comment',
+                                            'label': '评论次数',
+                                            'placeholder': '1-3或者1'
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 8
                                 },
                                 'content': [
                                     {
@@ -747,6 +765,7 @@ class SignIn98(_PluginBase):
             "random_delay": '60-3600',
             "fid": '2,36,103',
             "cron": "0 9 * * *",
+            "comment": "1-3",
             "replies": "感谢分享\n感谢分享!\n感谢分享。\n感谢楼主\n感谢感谢\n感谢感谢！\n感谢感谢。\n谢谢分享\n谢谢楼主\n感谢楼主分享\n爱了爱了\n感谢分享\n楼主万岁！\n爱了爱了！！！\n赞！！！\n感谢\n非常不错\n支持支持\n感谢分享\n感谢楼主分享好片\n感谢分享！！\n感谢分享感谢分享\n必须支持\n感谢分享啊\n封面还不错\n谢谢！支持一波\n看着不错\n支持一波\n真不错啊\n不错不错\n感謝分享\n分享支持。\n感谢大佬分享\n看着不错\n感谢老板分享\n谢谢分享！！！"
         }
 
