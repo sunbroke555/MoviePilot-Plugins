@@ -29,7 +29,7 @@ class SignIn98(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png"
     # 插件版本
-    plugin_version = "1.1"
+    plugin_version = "1.1.1"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -211,33 +211,39 @@ class SignIn98(_PluginBase):
                     logger.info("今日已评论，开始签到逻辑")
                     comment_flag = True
 
-        try:
-            if not comment_flag:
-                # 评论一次
-                self.__do_comment(page)
+        success_flag = False
+        retry = 0
+        sign_result = None
+        while not success_flag and retry < 3:
+            try:
+                if not comment_flag:
+                    # 评论一次
+                    self.__do_comment(page)
 
-                wait_time = random.randint(3, 10)
+                    wait_time = random.randint(3, 10)
+                    logger.info(f"随机等待 {wait_time} 秒")
+                    time.sleep(wait_time)
+
+                # 签到一次
+                success_flag, sign_result = self.__do_sign(page)
+                if not success_flag:
+                    # 重试签到3次
+                    for i in range(3):
+                        if retry == 3:
+                            break
+                        logger.info(f"第 {i + 1} 次重试签到")
+                        success_flag, sign_result = self.__do_sign(page)
+                        if not success_flag:
+                            retry += 1
+                        else:
+                            if '签到成功' in sign_result:
+                                break
+            except Exception as e:
+                logger.error(f"获取网页源码失败: {str(e)}, 稍后重试第 {retry + 2} 次")
+                wait_time = random.randint(2, 5)
                 logger.info(f"随机等待 {wait_time} 秒")
                 time.sleep(wait_time)
-
-            # 签到一次
-            success_flag, sign_result = self.__do_sign(page)
-            if not success_flag:
-                # 重试签到3次
-                retry = 0
-                for i in range(3):
-                    if retry == 3:
-                        break
-                    logger.info(f"第 {i + 1} 次重试签到")
-                    success_flag, sign_result = self.__do_sign(page)
-                    if not success_flag:
-                        retry += 1
-                    else:
-                        if '签到成功' in sign_result:
-                            break
-        except Exception as e:
-            logger.error(f"获取网页源码失败: {str(e)}")
-            sign_result = None
+                sign_result = None
 
         return sign_result
 
@@ -429,7 +435,7 @@ class SignIn98(_PluginBase):
 
     def get_page_source(self,
                         url: str,
-                        timeout: int = 20,
+                        timeout: int = 60,
                         page=None) -> str:
         """
         获取网页源码
