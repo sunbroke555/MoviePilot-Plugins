@@ -138,63 +138,66 @@ class SignIn98(_PluginBase):
             logger.info(f"随机延时 {random_delay} 秒")
             time.sleep(random_delay)
 
-        with sync_playwright() as playwright:
-            browser = playwright["chromium"].launch(headless=False)
-            context = browser.new_context(user_agent=self._ua, proxy={"server": self._proxy})
-            cookie_dict = http.cookies.SimpleCookie(self._cookie)
-            cookie_dict = [{'name': key, 'value': morsel.value, 'url': f"https://{self._host}"} for key, morsel in
-                           cookie_dict.items()]
-            context.add_cookies(cookie_dict)
-            page = context.new_page()
+        try:
+            with sync_playwright() as playwright:
+                browser = playwright["chromium"].launch(headless=False)
+                context = browser.new_context(user_agent=self._ua, proxy={"server": self._proxy})
+                cookie_dict = http.cookies.SimpleCookie(self._cookie)
+                cookie_dict = [{'name': key, 'value': morsel.value, 'url': f"https://{self._host}"} for key, morsel in
+                               cookie_dict.items()]
+                context.add_cookies(cookie_dict)
+                page = context.new_page()
 
-            try:
-                # 刷积分任务
-                if self._comment:
-                    if self._comment.count("-") == 1:
-                        start_cnt, end_cnt = self._comment.split("-")
-                        comment_cnt = random.randint(int(start_cnt), int(end_cnt))
-                    elif self._comment.isdigit():
-                        comment_cnt = int(self._comment)
-                    else:
-                        comment_cnt = 0
+                try:
+                    # 刷积分任务
+                    if self._comment:
+                        if self._comment.count("-") == 1:
+                            start_cnt, end_cnt = self._comment.split("-")
+                            comment_cnt = random.randint(int(start_cnt), int(end_cnt))
+                        elif self._comment.isdigit():
+                            comment_cnt = int(self._comment)
+                        else:
+                            comment_cnt = 0
 
-                    if comment_cnt:
-                        logger.info(f"开始进行{comment_cnt}次评论任务，随机延迟，请耐心等待。")
-                        for i in range(comment_cnt):
-                            # 发布每日评论
-                            self.__do_comment(page)
-                            wait_time = random.randint(20, 30)
-                            logger.info(f"随机等待 {wait_time} 秒")
-                            time.sleep(wait_time)
+                        if comment_cnt:
+                            logger.info(f"开始进行{comment_cnt}次评论任务，随机延迟，请耐心等待。")
+                            for i in range(comment_cnt):
+                                # 发布每日评论
+                                self.__do_comment(page)
+                                wait_time = random.randint(20, 30)
+                                logger.info(f"随机等待 {wait_time} 秒")
+                                time.sleep(wait_time)
 
-                # 签到任务
-                msg = self.start_sign(page)
+                    # 签到任务
+                    msg = self.start_sign(page)
 
-                # 发送通知
-                if self._notify:
-                    self.post_message(
-                        mtype=NotificationType.SiteMessage,
-                        title="【98签到任务完成】",
-                        text=msg)
+                    # 发送通知
+                    if self._notify:
+                        self.post_message(
+                            mtype=NotificationType.SiteMessage,
+                            title="【98签到任务完成】",
+                            text=msg)
 
-                # 读取历史记录
-                history = self.get_data('history') or []
+                    # 读取历史记录
+                    history = self.get_data('history') or []
 
-                history.append({
-                    "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
-                    "msg": msg
-                })
+                    history.append({
+                        "date": datetime.today().strftime('%Y-%m-%d %H:%M:%S'),
+                        "msg": msg
+                    })
 
-                thirty_days_ago = time.time() - int(self._history_days) * 24 * 60 * 60
-                history = [record for record in history if
-                           datetime.strptime(record["date"],
-                                             '%Y-%m-%d %H:%M:%S').timestamp() >= thirty_days_ago]
-                # 保存签到历史
-                self.save_data(key="history", value=history)
-            except Exception as e:
-                logger.error(f"错误原因：{str(e)}")
-            finally:
-                browser.close()
+                    thirty_days_ago = time.time() - int(self._history_days) * 24 * 60 * 60
+                    history = [record for record in history if
+                               datetime.strptime(record["date"],
+                                                 '%Y-%m-%d %H:%M:%S').timestamp() >= thirty_days_ago]
+                    # 保存签到历史
+                    self.save_data(key="history", value=history)
+                except Exception as e:
+                    logger.error(f"错误原因：{str(e)}")
+                finally:
+                    browser.close()
+        except Exception as err:
+            logger.error(f"仿真浏览器开启失败: {str(err)}")
 
     def daysign(self, page) -> str:
         """
