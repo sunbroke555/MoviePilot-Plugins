@@ -80,7 +80,7 @@ class SignIn98(_PluginBase):
             self._ua = config.get("ua")
             self._onlyonce = config.get("onlyonce")
             self._comment = config.get("comment")
-            self._proxy = config.get("proxy")
+            self._proxy = config.get("proxy") or settings.PROXY_HOST
             self._history_days = config.get("history_days") or 30
 
         # 签到成功文件
