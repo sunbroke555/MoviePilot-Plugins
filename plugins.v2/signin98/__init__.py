@@ -29,7 +29,7 @@ class SignIn98(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png"
     # 插件版本
-    plugin_version = "1.1.1"
+    plugin_version = "1.1.2"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -55,6 +55,7 @@ class SignIn98(_PluginBase):
     _ua = None
     _replies = None
     _comment = None
+    _proxy = None
     # 签到成功文件
     SIGN_SUCCESS_FILE: str = None
     # 评论成功文件
@@ -79,6 +80,7 @@ class SignIn98(_PluginBase):
             self._ua = config.get("ua")
             self._onlyonce = config.get("onlyonce")
             self._comment = config.get("comment")
+            self._proxy = config.get("proxy")
             self._history_days = config.get("history_days") or 30
 
         # 签到成功文件
@@ -106,6 +108,7 @@ class SignIn98(_PluginBase):
                 "replies": self._replies,
                 "fid": self._fid,
                 "ua": self._ua,
+                "proxy": self._proxy,
                 "history_days": self._history_days,
                 "random_delay": self._random_delay,
                 "comment": self._comment
@@ -137,7 +140,7 @@ class SignIn98(_PluginBase):
 
         with sync_playwright() as playwright:
             browser = playwright["chromium"].launch(headless=False)
-            context = browser.new_context(user_agent=self._ua, proxy=settings.PROXY_SERVER)
+            context = browser.new_context(user_agent=self._ua, proxy={"server": self._proxy})
             cookie_dict = http.cookies.SimpleCookie(self._cookie)
             cookie_dict = [{'name': key, 'value': morsel.value, 'url': f"https://{self._host}"} for key, morsel in
                            cookie_dict.items()]
@@ -726,7 +729,23 @@ class SignIn98(_PluginBase):
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
-                                    'md': 8
+                                    'md': 4
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
+                                            'model': 'proxy',
+                                            'label': '自定义代理'
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 4
                                 },
                                 'content': [
                                     {
@@ -768,6 +787,7 @@ class SignIn98(_PluginBase):
             "onlyonce": False,
             "notify": False,
             "cookie": "",
+            "proxy": settings.PROXY_HOST,
             "host": "sehuatang.org",
             "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             "history_days": 7,
