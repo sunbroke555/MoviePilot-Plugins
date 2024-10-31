@@ -3,11 +3,12 @@
     "name": "云盘助手",
     "description": "本地文件定时转移到云盘，软连接/strm回本地，定时清理无效软连接。",
     "labels": "云盘",
-    "version": "2.2.1",
+    "version": "2.2.2",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png",
     "author": "thsrite",
     "level": 1,
     "history": {
+      "v2.2.2": "增加115上传错误日志",
       "v2.2.1": "增加115Client上传",
       "v2.2": "适配v2多媒体服务器",
       "v2.1.5": "监控模式下自定义文件保留时长不生效",
