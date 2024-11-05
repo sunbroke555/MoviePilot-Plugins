@@ -65,7 +65,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.2.2"
+    plugin_version = "2.2.3"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -428,6 +428,9 @@ class CloudAssistant(_PluginBase):
                             logger.info(f"{event_path} 命中整理屏蔽词 {keyword}，不处理")
                             return
 
+                # 文件大小
+                file_size = file_path.stat().st_size
+
                 # 查询转移配置
                 monitor_dir = self._dirconf.get(mon_path)
                 mount_path = monitor_dir.get("mount_path")
@@ -583,7 +586,7 @@ class CloudAssistant(_PluginBase):
                         self.__delete_src_file(transferhis, src_paths, src_preserve_hierarchy, only_media)
                     # 发送消息汇总
                     if self._notify and transferhis:
-                        self.__msg_handler(transferhis)
+                        self.__msg_handler(transferhis, file_size)
 
         except Exception as e:
             logger.error("目录监控发生错误：%s - %s" % (str(e), traceback.format_exc()))
@@ -704,7 +707,7 @@ class CloudAssistant(_PluginBase):
             except AttributeError:
                 return stat.st_mtime
 
-    def __msg_handler(self, transferhis):
+    def __msg_handler(self, transferhis, file_size):
         """
         组织消息发送数据
         """
@@ -717,6 +720,7 @@ class CloudAssistant(_PluginBase):
                   "category": "category",
                   "image": "image",
                   "episodes": [],
+                  "size: size,
                   "time": "2023-08-24 23:23:23.332"
               }
           }
@@ -728,12 +732,15 @@ class CloudAssistant(_PluginBase):
             key + " " + transferhis.seasons) or {}
         if media_list:
             episodes = media_list.get("episodes") or []
+            size = media_list.get("size") or 0
             if transferhis.type == MediaType.TV.value:
                 if episodes:
                     if int(transferhis.episodes.replace("E", "")) not in episodes:
                         episodes.append(int(transferhis.episodes.replace("E", "")))
                 else:
                     episodes.append(int(transferhis.episodes.replace("E", "")))
+                if size:
+                    file_size += size
             media_list = {
                 "key": key,
                 "mtype": transferhis.type,
@@ -742,6 +749,7 @@ class CloudAssistant(_PluginBase):
                 "season": transferhis.seasons,
                 "episodes": episodes,
                 "tmdbid": transferhis.tmdbid,
+                "size": file_size,
                 "time": datetime.datetime.now()
             }
         else:
@@ -754,6 +762,7 @@ class CloudAssistant(_PluginBase):
                 "episodes": [
                     int(transferhis.episodes.replace("E", ""))] if transferhis.type == MediaType.TV.value else [],
                 "tmdbid": transferhis.tmdbid,
+                "size": file_size,
                 "time": datetime.datetime.now()
             }
         self._medias[key + " " + transferhis.seasons] = media_list
@@ -783,6 +792,7 @@ class CloudAssistant(_PluginBase):
             season = media_list.get("season")
             episodes = media_list.get("episodes")
             tmdbid = media_list.get("tmdbid")
+            file_size = media_list.get("size")
             if not last_update_time:
                 del self._medias[medis_title_year_season]
                 continue
@@ -818,18 +828,19 @@ class CloudAssistant(_PluginBase):
                                                  mtype=mtype,
                                                  category=category,
                                                  image=image,
-                                                 count=len(episodes) if episodes else 1)
+                                                 count=len(episodes) if episodes else 1,
+                                                 file_size=file_size)
                     logger.info(f"发送媒体 {medis_title_year_season} 转移消息成功")
                 # 发送完消息，移出key
                 del self._medias[medis_title_year_season]
                 continue
 
-    def __send_transfer_message(self, title_year, season_episodes, mtype, category, image, count):
+    def __send_transfer_message(self, title_year, season_episodes, mtype, category, image, count, file_size):
         """
         发送入库成功的消息
         """
         msg_title = f"{title_year} {season_episodes if season_episodes else ''} 已转移完成"
-        msg_str = f"类型：{mtype}，类别：{category}，共{count}个文件"
+        msg_str = f"类型：{mtype}，类别：{category}，共{count}个文件，大小：{StringUtils.str_filesize(file_size)}"
         # 发送
         self.post_message(
             mtype=NotificationType.Plugin,
