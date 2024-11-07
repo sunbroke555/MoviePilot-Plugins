@@ -57,5 +57,17 @@
       "1.0.1": "修复问题",
       "v1.0": "98签到"
     }
+  },
+  "CloudCompanion": {
+    "name": "云盘伴侣",
+    "description": "定时全量增量生成软连接/strm文件。",
+    "labels": "云盘",
+    "version": "1.0",
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/create.png",
+    "author": "thsrite",
+    "level": 1,
+    "history": {
+      "v1.0": "定时全量增量生成软连接/strm文件"
+    }
   }
 }
