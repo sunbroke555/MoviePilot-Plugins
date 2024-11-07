@@ -974,67 +974,6 @@ class CloudAssistant(_PluginBase):
 
         return retcode, retmsg
 
-    @staticmethod
-    def __create_strm_file(mount_file: str, mount_path: str, target_file: str, library_dir: str = None,
-                           cloud_type: str = None, cloud_path: str = None, cloud_url: str = None,
-                           cloud_scheme: str = None):
-        """
-        生成strm文件
-        :param library_dir:
-        :param mount_path:
-        :param mount_file:
-        """
-        try:
-            # 获取视频文件名和目录
-            video_name = Path(target_file).name
-            # 获取视频目录
-            dest_path = Path(target_file).parent
-
-            if not dest_path.exists():
-                logger.info(f"创建目标文件夹 {dest_path}")
-                os.makedirs(str(dest_path))
-
-            # 构造.strm文件路径
-            strm_path = os.path.join(dest_path, f"{os.path.splitext(video_name)[0]}.strm")
-            # strm已存在跳过处理
-            if Path(strm_path).exists():
-                logger.info(f"strm文件已存在 {strm_path}")
-                return
-
-            logger.info(f"替换前挂载云盘路径:::{mount_file}")
-
-            # 云盘模式
-            if cloud_type:
-                # 替换路径中的\为/
-                dest_file = mount_file.replace("\\", "/")
-                dest_file = dest_file.replace(cloud_path, "")
-                # 对盘符之后的所有内容进行url转码
-                dest_file = urllib.parse.quote(dest_file, safe='')
-                if str(cloud_type) == "cd2":
-                    # 将路径的开头盘符"/mnt/user/downloads"替换为"http://localhost:19798/static/http/localhost:19798/False/"
-                    dest_file = f"{cloud_scheme}://{cloud_url}/static/{cloud_scheme}/{cloud_url}/False/{dest_file}"
-                    logger.info(f"替换后cd2路径:::{dest_file}")
-                elif str(cloud_type) == "alist":
-                    dest_file = f"{cloud_scheme}://{cloud_url}/d/{dest_file}"
-                    logger.info(f"替换后alist路径:::{dest_file}")
-                else:
-                    logger.error(f"云盘类型 {cloud_type} 错误")
-                    return
-            else:
-                # 本地挂载路径转为emby路径
-                dest_file = mount_file.replace(mount_path, library_dir)
-                logger.info(f"替换后emby容器内路径:::{dest_file}")
-
-            # 写入.strm文件
-            with open(strm_path, 'w') as f:
-                f.write(dest_file)
-
-            logger.info(f"创建strm文件 {strm_path}")
-            return 0
-        except Exception as e:
-            logger.error(f"创建strm文件失败")
-            print(str(e))
-            return 1
 
     @staticmethod
     def is_broken_symlink(path):
