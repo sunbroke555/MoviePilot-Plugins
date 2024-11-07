@@ -65,7 +65,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.2.3"
+    plugin_version = "2.2.4"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -129,6 +129,7 @@ class CloudAssistant(_PluginBase):
                 "only_media": "true",
                 "overwrite": "false",
                 "upload_cloud": "true",
+                "strm_format": "",
                 "notify_url": ""
             }
         ]
@@ -448,6 +449,8 @@ class CloudAssistant(_PluginBase):
                 src_preserve_hierarchy = monitor_dir.get("src_preserve_hierarchy") or 0
                 # 本地文件保留时间 （小时）
                 retention_time = monitor_dir.get("retention_time") or 0
+                # strm 生成内容格式
+                strm_format = monitor_dir.get("strm_format")
                 if not self._monitor and retention_time > 0:
                     creation_time = self.__get_file_creation_time(file_path)
                     creation_datetime = datetime.datetime.fromtimestamp(creation_time)
@@ -525,15 +528,14 @@ class CloudAssistant(_PluginBase):
                                                               target_file=target_return_file,
                                                               transfer_type="softlink")
                     else:
+                        # 生成strm文件内容
+                        strm_content = self.__format_content(format_str=strm_format,
+                                                             local_file=mount_file,
+                                                             cloud_file=mount_file.replace(str(mount_path),
+                                                                                           str(path_115)))
                         # 生成strm文件
-                        retcode = self.__create_strm_file(mount_file=mount_file,
-                                                          mount_path=mount_path,
-                                                          target_file=target_return_file,
-                                                          library_dir=monitor_dir.get("library_dir"),
-                                                          cloud_type=monitor_dir.get("cloud_type"),
-                                                          cloud_path=monitor_dir.get("cloud_path"),
-                                                          cloud_url=monitor_dir.get("cloud_url"),
-                                                          cloud_scheme=monitor_dir.get("cloud_scheme"))
+                        retcode = self.__create_strm_file(strm_file=target_return_file,
+                                                          strm_content=strm_content)
 
                     if monitor_dir.get("notify_url"):
                         RequestUtils(content_type="application/json").post(url=monitor_dir.get("notify_url"), json={
@@ -590,6 +592,49 @@ class CloudAssistant(_PluginBase):
 
         except Exception as e:
             logger.error("目录监控发生错误：%s - %s" % (str(e), traceback.format_exc()))
+
+    @staticmethod
+    def __format_content(format_str: str, local_file: str, cloud_file: str):
+        """
+        格式化strm内容
+        """
+        if "{local_file}" in format_str:
+            return format_str.replace("{local_file}", local_file)
+        elif "{cloud_file}" in format_str:
+            # 替换路径中的\为/
+            cloud_file = cloud_file.replace("\\", "/")
+            # 对盘符之后的所有内容进行url转码
+            cloud_file = urllib.parse.quote(cloud_file, safe='')
+            return format_str.replace("{cloud_file}", cloud_file)
+        else:
+            return None
+
+    def __create_strm_file(self, strm_file: str, strm_content: str):
+
+        """
+        生成strm文件
+        :param library_dir:
+        :param dest_dir:
+        :param dest_file:
+        """
+        try:
+            # 文件
+            if not Path(strm_file).parent.exists():
+                logger.info(f"创建目标文件夹 {Path(strm_file).parent}")
+                os.makedirs(Path(strm_file).parent)
+
+            # 构造.strm文件路径
+            strm_file = os.path.join(Path(strm_file).parent, f"{os.path.splitext(Path(strm_file).name)[0]}.strm")
+
+            # 写入.strm文件
+            with open(strm_file, 'w') as f:
+                f.write(strm_content)
+
+            logger.info(f"创建strm文件成功 {strm_file} -> {strm_content}")
+            return 0
+        except Exception as e:
+            logger.error(f"创建strm文件失败 {strm_file} -> {str(e)}")
+            return 1
 
     @staticmethod
     def __check_file_exists(mount_file, retries=3, wait_time=20):
