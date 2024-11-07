@@ -29,13 +29,13 @@ from app.utils.system import SystemUtils
 
 class CloudCompanion(_PluginBase):
     # 插件名称
-    plugin_name = "云盘伴侣"
+    plugin_name = "115伴侣"
     # 插件描述
     plugin_desc = "定时全量增量生成软连接/strm文件。"
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/create.png"
     # 插件版本
-    plugin_version = "1.0"
+    plugin_version = "1.0.1"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -65,6 +65,7 @@ class CloudCompanion(_PluginBase):
     _create_type = None
     _115_cookie = None
     _115client = None
+    _115dirconf = {}
     _headers = {
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 11_2_0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/88.0.4324.192 Safari/537.36",
         "Cookie": "",
@@ -76,6 +77,7 @@ class CloudCompanion(_PluginBase):
     def init_plugin(self, config: dict = None):
         # 清空配置
         self._dirconf = {}
+        self._115dirconf = {}
         self._libraryconf = {}
         self._cloudtypeconf = {}
         self._cloudurlconf = {}
@@ -116,22 +118,25 @@ class CloudCompanion(_PluginBase):
                 if str(monitor_conf).startswith("#"):
                     continue
                 # 软连接模式
-                if str(monitor_conf).count("#") == 1:
-                    source_dir = str(monitor_conf).split("#")[0]
-                    target_dir = str(monitor_conf).split("#")[1]
+                if str(monitor_conf).count("#") == 2:
+                    cloud_dir = str(monitor_conf).split("#")[0]
+                    source_dir = str(monitor_conf).split("#")[1]
+                    target_dir = str(monitor_conf).split("#")[2]
                 # strm本地模式
-                elif str(monitor_conf).count("#") == 2:
-                    source_dir = str(monitor_conf).split("#")[0]
-                    target_dir = str(monitor_conf).split("#")[1]
-                    library_dir = str(monitor_conf).split("#")[2]
+                elif str(monitor_conf).count("#") == 3:
+                    cloud_dir = str(monitor_conf).split("#")[0]
+                    source_dir = str(monitor_conf).split("#")[1]
+                    target_dir = str(monitor_conf).split("#")[2]
+                    library_dir = str(monitor_conf).split("#")[3]
                     self._libraryconf[source_dir] = library_dir
                 # strm远程模式
                 elif str(monitor_conf).count("#") == 4:
-                    source_dir = str(monitor_conf).split("#")[0]
-                    target_dir = str(monitor_conf).split("#")[1]
-                    cloud_type = str(monitor_conf).split("#")[2]
-                    cloud_path = str(monitor_conf).split("#")[3]
-                    cloud_url = str(monitor_conf).split("#")[4]
+                    cloud_dir = str(monitor_conf).split("#")[0]
+                    source_dir = str(monitor_conf).split("#")[1]
+                    target_dir = str(monitor_conf).split("#")[2]
+                    cloud_type = str(monitor_conf).split("#")[3]
+                    cloud_path = str(monitor_conf).split("#")[4]
+                    cloud_url = str(monitor_conf).split("#")[5]
                     self._cloudtypeconf[source_dir] = cloud_type
                     self._cloudpathconf[source_dir] = cloud_path
                     self._cloudurlconf[source_dir] = cloud_url
@@ -140,6 +145,7 @@ class CloudCompanion(_PluginBase):
                     continue
                 # 存储目录监控配置
                 self._dirconf[source_dir] = target_dir
+                self._115dirconf[cloud_dir] = source_dir
 
                 # 检查媒体库目录是不是下载目录的子目录
                 try:
@@ -205,12 +211,7 @@ class CloudCompanion(_PluginBase):
 
         logger.info("云盘伴侣生成任务开始")
         # 首次扫描或者重建索引
-        __init_flag = False
-        if self._onlyonce or not Path(self.__cloud_files_json).exists():
-            logger.info("正在重建索引或初始化运行")
-            self.__update_config()
-            __init_flag = True
-        else:
+        if Path(self.__cloud_files_json).exists():
             logger.info("尝试加载本地缓存")
             # 尝试加载本地
             with open(self.__cloud_files_json, 'r') as file:
@@ -218,39 +219,32 @@ class CloudCompanion(_PluginBase):
                 if content:
                     self.__cloud_files = json.loads(content)
 
-        # 本地没加载到则重建索引
-        if not self.__cloud_files:
-            logger.error("尝试加载本地缓存，开始重建索引")
-            self.__update_config()
-            __init_flag = True
-
-        # 不是首次索引，则重新扫描、判断是否有新文件
-        if not __init_flag:
-            __save_flag = False
-            for source_dir in self._dirconf.keys():
-                tree_content = self.retrieve_directory_structure(source_dir)
-                if not tree_content:
+        __save_flag = False
+        for cloud_dir in self._115dirconf.keys():
+            tree_content = self.retrieve_directory_structure(cloud_dir)
+            if not tree_content:
+                continue
+            source_dir = self._115dirconf.get(cloud_dir)
+            target_dir = self._dirconf.get(source_dir)
+            for path in self.parse_tree_structure(tree_content):
+                source_file = str(path).replace(cloud_dir, source_dir)
+                target_file = str(path).replace(cloud_dir, target_dir)
+                if Path(source_file).suffix.lower() not in settings.RMT_MEDIAEXT:
                     continue
-                target_dir = self._dirconf.get(source_dir)
-                for path in self.parse_tree_structure(tree_content):
-                    source_file = os.path.join(source_dir, str(path))
-                    target_file = os.path.join(target_dir, str(path))
-                    if Path(source_file).suffix.lower() not in settings.RMT_MEDIAEXT:
-                        continue
 
-                    logger.info(f"开始处理文件 {source_file}")
-                    if source_file not in self.__cloud_files:
-                        logger.info(f"扫描到新文件 {source_file}，正在开始处理")
-                        # 云盘文件json新增
-                        self.__cloud_files.append(source_file)
-                        if self._create_type == "strm":
-                            # 扫描云盘文件，判断是否有对应strm
-                            self.__strm(source_file)
-                        else:
-                            self.__softlink(source_file, target_file)
-                        __save_flag = True
+                logger.info(f"开始处理文件 {source_file}")
+                if source_file not in self.__cloud_files:
+                    logger.info(f"扫描到新文件 {path}，正在开始处理")
+                    # 云盘文件json新增
+                    self.__cloud_files.append(path)
+                    if self._create_type == "strm":
+                        # 扫描云盘文件，判断是否有对应strm
+                        self.__strm(source_dir, source_file)
                     else:
-                        logger.info(f"{source_file} 已在缓存中！跳过处理")
+                        self.__softlink(source_file, target_file)
+                    __save_flag = True
+                else:
+                    logger.info(f"{source_file} 已在缓存中！跳过处理")
 
             # 重新保存json文件
             if __save_flag:
@@ -292,58 +286,55 @@ class CloudCompanion(_PluginBase):
             logger.info(f"创建目标文件夹 {Path(target_file).parent}")
             os.makedirs(Path(target_file).parent)
 
-        retcode, retmsg = SystemUtils.softlink(source_file, target_file)
+        retcode, retmsg = SystemUtils.softlink(Path(source_file), Path(target_file))
         logger.info(f"创建媒体文件软连接 {str(source_file)} 到 {str(target_file)} {retcode} {retmsg}")
 
-    def __strm(self, source_file):
+    def __strm(self, source_dir, source_file):
         """
         判断文件是否有对应strm
         """
         try:
-            # 获取文件的转移路径
-            for source_dir in self._dirconf.keys():
-                if str(source_file).startswith(source_dir):
-                    # 转移路径
-                    dest_dir = self._dirconf.get(source_dir)
-                    # 媒体库容器内挂载路径
-                    library_dir = self._libraryconf.get(source_dir)
-                    # 云服务类型
-                    cloud_type = self._cloudtypeconf.get(source_dir)
-                    # 云服务挂载本地跟路径
-                    cloud_path = self._cloudpathconf.get(source_dir)
-                    # 云服务地址
-                    cloud_url = self._cloudurlconf.get(source_dir)
+            # 转移路径
+            dest_dir = self._dirconf.get(source_dir)
+            # 媒体库容器内挂载路径
+            library_dir = self._libraryconf.get(source_dir)
+            # 云服务类型
+            cloud_type = self._cloudtypeconf.get(source_dir)
+            # 云服务挂载本地跟路径
+            cloud_path = self._cloudpathconf.get(source_dir)
+            # 云服务地址
+            cloud_url = self._cloudurlconf.get(source_dir)
 
-                    # 转移后文件
-                    dest_file = source_file.replace(source_dir, dest_dir)
-                    # 如果是文件夹
-                    if Path(dest_file).is_dir():
-                        if not Path(dest_file).exists():
-                            logger.info(f"创建目标文件夹 {dest_file}")
-                            os.makedirs(dest_file)
-                            continue
-                    else:
-                        # 非媒体文件
-                        if Path(dest_file).exists():
-                            logger.info(f"目标文件 {dest_file} 已存在")
-                            continue
+            # 转移后文件
+            dest_file = source_file.replace(source_dir, dest_dir)
+            # 如果是文件夹
+            if Path(dest_file).is_dir():
+                if not Path(dest_file).exists():
+                    logger.info(f"创建目标文件夹 {dest_file}")
+                    os.makedirs(dest_file)
+                    return
+            else:
+                # 非媒体文件
+                if Path(dest_file).exists():
+                    logger.info(f"目标文件 {dest_file} 已存在")
+                    return
 
-                        # 文件
-                        if not Path(dest_file).parent.exists():
-                            logger.info(f"创建目标文件夹 {Path(dest_file).parent}")
-                            os.makedirs(Path(dest_file).parent)
+                # 文件
+                if not Path(dest_file).parent.exists():
+                    logger.info(f"创建目标文件夹 {Path(dest_file).parent}")
+                    os.makedirs(Path(dest_file).parent)
 
-                        # 视频文件创建.strm文件
-                        if Path(dest_file).suffix.lower() in settings.RMT_MEDIAEXT:
-                            # 创建.strm文件
-                            self.__create_strm_file(scheme="https" if self._https else "http",
-                                                    dest_file=dest_file,
-                                                    dest_dir=dest_dir,
-                                                    source_file=source_file,
-                                                    library_dir=library_dir,
-                                                    cloud_type=cloud_type,
-                                                    cloud_path=cloud_path,
-                                                    cloud_url=cloud_url)
+                # 视频文件创建.strm文件
+                if Path(dest_file).suffix.lower() in settings.RMT_MEDIAEXT:
+                    # 创建.strm文件
+                    self.__create_strm_file(scheme="https" if self._https else "http",
+                                            dest_file=dest_file,
+                                            dest_dir=dest_dir,
+                                            source_file=source_file,
+                                            library_dir=library_dir,
+                                            cloud_type=cloud_type,
+                                            cloud_path=cloud_path,
+                                            cloud_url=cloud_url)
         except Exception as e:
             logger.error(f"create strm file error: {e}")
             print(str(e))
@@ -524,6 +515,7 @@ class CloudCompanion(_PluginBase):
             "cron": self._cron,
             "create_type": self._create_type,
             "monitor_confs": self._monitor_confs,
+            "115_cookie": self._115_cookie,
         })
 
     def get_state(self) -> bool:
@@ -703,7 +695,7 @@ class CloudCompanion(_PluginBase):
                                             'model': 'monitor_confs',
                                             'label': '监控目录',
                                             'rows': 5,
-                                            'placeholder': '监控目录#目的目录#媒体服务器内源文件路径'
+                                            'placeholder': '115路径#MoviePilot挂载目录#MoviePilot生成目录#媒体服务器内源文件路径'
                                         }
                                     }
                                 ]
@@ -725,10 +717,10 @@ class CloudCompanion(_PluginBase):
                                             'type': 'info',
                                             'variant': 'tonal',
                                             'text': '目录监控格式：0软连接，1、2、3strm'
-                                                    '0.监控目录#目的目录'
-                                                    '1.监控目录#目的目录#媒体服务器内源文件路径；'
-                                                    '2.监控目录#目的目录#cd2#cd2挂载本地跟路径#cd2服务地址；'
-                                                    '3.监控目录#目的目录#alist#alist挂载本地跟路径#alist服务地址。'
+                                                    '0.115目录#MoviePilot挂载目录#MoviePilot生成目录'
+                                                    '1.115路径#MoviePilot挂载目录#MoviePilot生成目录#媒体服务器内源文件路径；'
+                                                    '2.115路径#MoviePilot挂载目录#MoviePilot生成目录#cd2#cd2挂载本地跟路径#cd2服务地址；'
+                                                    '3.115路径#MoviePilot挂载目录#MoviePilot生成目录#alist#alist挂载本地跟路径#alist服务地址。'
                                         }
                                     }
                                 ]
