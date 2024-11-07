@@ -35,7 +35,7 @@ class CloudCompanion(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/create.png"
     # 插件版本
-    plugin_version = "1.0.1"
+    plugin_version = "1.0.2"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -53,6 +53,7 @@ class CloudCompanion(_PluginBase):
     _monitor_confs = None
     _onlyonce = False
     _https = False
+    _rebuild = False
     _observer = []
     __cloud_files_json = "cloud_files.json"
 
@@ -92,6 +93,7 @@ class CloudCompanion(_PluginBase):
             self._monitor_confs = config.get("monitor_confs")
             self._create_type = config.get("create_type")
             self._115_cookie = config.get("115_cookie")
+            self._rebuild = config.get("rebuild")
             if self._115_cookie:
                 self._headers["Cookie"] = self._115_cookie
                 self._115client = P115Client(self._115_cookie, check_for_relogin=True)
@@ -101,6 +103,12 @@ class CloudCompanion(_PluginBase):
 
         # 停止现有任务
         self.stop_service()
+
+        if self._rebuild:
+            logger.info("删除已有索引")
+            self._rebuild = False
+            self.__update_config()
+            Path(self.__cloud_files_json).unlink()
 
         if self._enabled or self._onlyonce:
             # 定时服务
@@ -234,14 +242,18 @@ class CloudCompanion(_PluginBase):
 
                 logger.info(f"开始处理文件 {source_file}")
                 if source_file not in self.__cloud_files:
+                    if Path(target_file).exists():
+                        self.__cloud_files.append(path)
+                        logger.info(f"目标文件 {target_file} 已存在")
+                        continue
                     logger.info(f"扫描到新文件 {path}，正在开始处理")
-                    # 云盘文件json新增
-                    self.__cloud_files.append(path)
                     if self._create_type == "strm":
                         # 扫描云盘文件，判断是否有对应strm
                         self.__strm(source_dir, source_file)
                     else:
                         self.__softlink(source_file, target_file)
+                    # 云盘文件json新增
+                    self.__cloud_files.append(path)
                     __save_flag = True
                 else:
                     logger.info(f"{source_file} 已在缓存中！跳过处理")
@@ -516,6 +528,7 @@ class CloudCompanion(_PluginBase):
             "create_type": self._create_type,
             "monitor_confs": self._monitor_confs,
             "115_cookie": self._115_cookie,
+            "rebuild": self._rebuild,
         })
 
     def get_state(self) -> bool:
@@ -576,7 +589,7 @@ class CloudCompanion(_PluginBase):
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
-                                    'md': 4
+                                    'md': 3
                                 },
                                 'content': [
                                     {
@@ -592,7 +605,7 @@ class CloudCompanion(_PluginBase):
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
-                                    'md': 4
+                                    'md': 3
                                 },
                                 'content': [
                                     {
@@ -608,7 +621,7 @@ class CloudCompanion(_PluginBase):
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
-                                    'md': 4
+                                    'md': 3
                                 },
                                 'content': [
                                     {
@@ -616,6 +629,22 @@ class CloudCompanion(_PluginBase):
                                         'props': {
                                             'model': 'https',
                                             'label': '启用https',
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 3
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VSwitch',
+                                        'props': {
+                                            'model': 'rebuild',
+                                            'label': '重建索引',
                                         }
                                     }
                                 ]
@@ -776,6 +805,7 @@ class CloudCompanion(_PluginBase):
             "enabled": False,
             "cron": "",
             "onlyonce": False,
+            "rebuild": False,
             "https": False,
             "monitor_confs": "",
             "115_cookie": "",

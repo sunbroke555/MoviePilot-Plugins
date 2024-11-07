@@ -36,5 +36,20 @@
       "v1.1": "支持cd2上传、支持定时清理无效软连接、支持strm生成方式",
       "v1.0": "定时移动到云盘，软连接回本地（清理无效软连接暂未开发）"
     }
+  },
+  "CloudCompanion": {
+    "name": "115伴侣",
+    "description": "定时全量增量生成软连接/strm文件。",
+    "labels": "云盘",
+    "version": "1.0.2",
+    "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/create.png",
+    "author": "thsrite",
+    "level": 1,
+    "v2": true,
+    "history": {
+      "v1.0.2": "支持重建索引",
+      "v1.0.1": "问题修复",
+      "v1.0": "定时全量增量生成软连接/strm文件"
+    }
   }
 }
