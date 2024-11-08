@@ -65,7 +65,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.2.4"
+    plugin_version = "2.2.5"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -534,8 +534,8 @@ class CloudAssistant(_PluginBase):
                                                              cloud_file=mount_file.replace(str(mount_path),
                                                                                            str(path_115)))
                         # 生成strm文件
-                        retcode = self.__create_strm_file(strm_file=target_return_file,
-                                                          strm_content=strm_content)
+                        retcode, target_return_file = self.__create_strm_file(strm_file=target_return_file,
+                                                                              strm_content=strm_content)
 
                     if monitor_dir.get("notify_url"):
                         RequestUtils(content_type="application/json").post(url=monitor_dir.get("notify_url"), json={
@@ -572,7 +572,7 @@ class CloudAssistant(_PluginBase):
                         history.append({
                             "file_path": str(file_path),
                             "target_cloud_file": mount_file,
-                            "target_soft_file": target_return_file,
+                            "target_return_file": target_return_file,
                             "delete_dest": delete_dest,
                             "delete_history": delete_history,
                             "time": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(time.time()))
@@ -631,10 +631,10 @@ class CloudAssistant(_PluginBase):
                 f.write(strm_content)
 
             logger.info(f"创建strm文件成功 {strm_file} -> {strm_content}")
-            return 0
+            return 0, strm_file
         except Exception as e:
             logger.error(f"创建strm文件失败 {strm_file} -> {str(e)}")
-            return 1
+            return 1, strm_file
 
     @staticmethod
     def __check_file_exists(mount_file, retries=3, wait_time=20):
@@ -973,7 +973,6 @@ class CloudAssistant(_PluginBase):
             logger.error(retmsg)
 
         return retcode, retmsg
-
 
     @staticmethod
     def is_broken_symlink(path):
@@ -1746,7 +1745,7 @@ class CloudAssistant(_PluginBase):
                     },
                     {
                         'component': 'td',
-                        'text': history.get("target_soft_file")
+                        'text': history.get("target_return_file")
                     },
                     {
                         'component': 'td',
@@ -1792,7 +1791,7 @@ class CloudAssistant(_PluginBase):
                                                 'props': {
                                                     'class': 'text-start ps-4'
                                                 },
-                                                'text': '本地文件'
+                                                'text': '本地源文件'
                                             },
                                             {
                                                 'component': 'th',
@@ -1806,7 +1805,7 @@ class CloudAssistant(_PluginBase):
                                                 'props': {
                                                     'class': 'text-start ps-4'
                                                 },
-                                                'text': '软连接文件'
+                                                'text': '本地目的文件'
                                             },
                                             {
                                                 'component': 'th',

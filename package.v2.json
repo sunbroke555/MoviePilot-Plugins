@@ -3,11 +3,12 @@
     "name": "云盘助手",
     "description": "本地文件定时转移到云盘，软连接/strm回本地，定时清理无效软连接。",
     "labels": "云盘",
-    "version": "2.2.4",
+    "version": "2.2.5",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png",
     "author": "thsrite",
     "level": 1,
     "history": {
+      "v2.2.5": "修改历史记录",
       "v2.2.4": "修改strm生成",
       "v2.2.3": "消息发送增加转移大小",
       "v2.2.2": "增加115上传错误日志",
