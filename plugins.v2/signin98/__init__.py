@@ -29,7 +29,7 @@ class SignIn98(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png"
     # 插件版本
-    plugin_version = "1.1.2"
+    plugin_version = "1.1.3"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -113,7 +113,7 @@ class SignIn98(_PluginBase):
                 "random_delay": self._random_delay,
                 "comment": self._comment
             })
-        else:
+        if self._cron:
             try:
                 self._scheduler.add_job(func=self.__signin,
                                         trigger=CronTrigger.from_crontab(str(self._cron)),
@@ -486,7 +486,7 @@ class SignIn98(_PluginBase):
                         msg = self.__get_user_profile(page)
                         logger.info(f"今日已签到。{msg}")
                         print(f"今日已签到。{msg}")
-                        return
+                        return f"今日已签到。{msg}"
 
             raw_html = self.daysign(page)
 
@@ -530,14 +530,6 @@ class SignIn98(_PluginBase):
             "kwargs": {} # 定时器参数
         }]
         """
-        if self._enabled and self._cron:
-            return [{
-                "id": "InvitesSignin",
-                "name": "药丸签到服务",
-                "trigger": CronTrigger.from_crontab(self._cron),
-                "func": self.__signin,
-                "kwargs": {}
-            }]
         return []
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
