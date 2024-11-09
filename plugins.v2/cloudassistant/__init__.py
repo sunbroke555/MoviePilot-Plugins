@@ -65,7 +65,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.2.5"
+    plugin_version = "2.2.6"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -93,6 +93,7 @@ class CloudAssistant(_PluginBase):
     _refresh = False
     _cron = None
     _invalid_cron = None
+    _update_cron = None
     _clean = False
     _exclude_keywords = ""
     _interval: int = 60
@@ -162,6 +163,7 @@ class CloudAssistant(_PluginBase):
             self._only_media_history = config.get("only_media_history")
             self._cron = config.get("cron")
             self._invalid_cron = config.get("invalid_cron")
+            self._update_cron = config.get("update_cron")
             self._dir_confs = config.get("dir_confs") or None
             self._rmt_mediaext = config.get(
                 "rmt_mediaext") or ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
@@ -300,10 +302,24 @@ class CloudAssistant(_PluginBase):
                                             id="handle_invalid_links")
                     logger.info(f"清理无效软连接服务启动，定时任务：{self._invalid_cron}")
 
+                if self._update_cron:
+                    self._scheduler.add_job(func=self.update_dependency,
+                                            trigger=CronTrigger.from_crontab(self._update_cron),
+                                            id="update_dependency")
+                    logger.info(f"更新依赖服务启动，定时任务：{self._update_cron}")
+
                 # 启动定时服务
                 if self._scheduler.get_jobs():
                     self._scheduler.print_jobs()
                     self._scheduler.start()
+
+    def update_dependency(self):
+        """
+        更新依赖
+        """
+        logger.info("开始更新依赖 ...")
+        subprocess.run(f"pip install -U -r {Path(os.path.abspath(__file__)).parent}/requirements.txt", shell=True)
+        logger.info("更新依赖完成！")
 
     def __update_config(self):
         """
@@ -323,6 +339,7 @@ class CloudAssistant(_PluginBase):
             "only_media_history": self._only_media_history,
             "refresh": self._refresh,
             "invalid_cron": self._invalid_cron,
+            "update_cron": self._update_cron,
             "rmt_mediaext": self._rmt_mediaext,
             "mediaservers": self._mediaservers,
         })
@@ -496,6 +513,7 @@ class CloudAssistant(_PluginBase):
                             _, file_id = self.__transfer_file(file_path=file_path,
                                                               target_file=mount_file,
                                                               transfer_type=self._transfer_type,
+                                                              file_size=file_size,
                                                               target_file_115=mount_file.replace(str(mount_path),
                                                                                                  str(path_115)))
                         else:
@@ -895,12 +913,12 @@ class CloudAssistant(_PluginBase):
             link=settings.MP_DOMAIN('#/history')
         )
 
-    def __transfer_file(self, file_path, target_file, transfer_type, target_file_115=None):
+    def __transfer_file(self, file_path, target_file, transfer_type, file_size, target_file_115=None):
         """
         转移文件
         """
         logger.info(f"开始 {transfer_type} 文件 {str(file_path)} 到 {target_file}")
-        if target_file_115 and self._115_client:
+        if target_file_115 and self._115_client and file_size <= 20 * 1024 * 1024 * 1024:
             # 如果是文件夹
             if Path(target_file).is_dir():
                 logger.info(f"检查并创建目标文件夹 {target_file}")
@@ -1442,13 +1460,57 @@ class CloudAssistant(_PluginBase):
                                     {
                                         'component': 'VTextField',
                                         'props': {
+                                            'model': 'update_cron',
+                                            'label': '定时更新依赖',
+                                            'placeholder': '5位cron表达式，留空关闭'
+                                        }
+                                    }
+                                ]
+                            },
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 4
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VSelect',
+                                        'props': {
+                                            'multiple': True,
+                                            'chips': True,
+                                            'clearable': True,
+                                            'model': 'mediaservers',
+                                            'label': '媒体服务器',
+                                            'items': [{"title": config.name, "value": config.name}
+                                                      for config in self.mediaserver_helper.get_configs().values() if
+                                                      config.type == "emby"]
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 4
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextField',
+                                        'props': {
                                             'model': 'interval',
                                             'label': '入库消息延迟',
                                             'placeholder': '10'
                                         }
                                     }
                                 ]
-                            }
+                            },
                         ]
                     },
                     {
@@ -1489,32 +1551,6 @@ class CloudAssistant(_PluginBase):
                                             'label': '视频格式',
                                             'rows': 2,
                                             'placeholder': ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VSelect',
-                                        'props': {
-                                            'multiple': True,
-                                            'chips': True,
-                                            'clearable': True,
-                                            'model': 'mediaservers',
-                                            'label': '媒体服务器',
-                                            'items': [{"title": config.name, "value": config.name}
-                                                      for config in self.mediaserver_helper.get_configs().values() if
-                                                      config.type == "emby"]
                                         }
                                     }
                                 ]
@@ -1696,6 +1732,7 @@ class CloudAssistant(_PluginBase):
             "interval": 60,
             "cron": "",
             "invalid_cron": "",
+            "update_cron": "",
             "dir_confs": json.dumps(CloudAssistant.example, indent=4, ensure_ascii=False),
             "mediaservers": [],
             "rmt_mediaext": ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
