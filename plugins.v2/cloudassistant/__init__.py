@@ -65,7 +65,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.2.6"
+    plugin_version = "2.2.7"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -521,6 +521,7 @@ class CloudAssistant(_PluginBase):
                             self.__transfer_file(file_path=file_path,
                                                  target_file=mount_file,
                                                  transfer_type="copy",
+                                                 file_size=file_size,
                                                  target_file_115=mount_file.replace(str(mount_path), str(path_115)))
 
                 # 2、软连接或者strm回本地路径
