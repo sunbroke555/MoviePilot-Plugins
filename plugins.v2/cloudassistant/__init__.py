@@ -12,13 +12,6 @@ from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
 import pytz
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
-from watchdog.observers.polling import PollingObserver
-from sqlalchemy.orm import Session
-
 from app import schemas
 from app.chain.tmdb import TmdbChain
 from app.chain.transfer import TransferChain
@@ -33,7 +26,13 @@ from app.schemas.types import EventType, SystemConfigKey, MediaType, Notificatio
 from app.utils.http import RequestUtils
 from app.utils.string import StringUtils
 from app.utils.system import SystemUtils
+from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from p115 import P115Client
+from sqlalchemy.orm import Session
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+from watchdog.observers.polling import PollingObserver
 
 lock = threading.Lock()
 
@@ -65,7 +64,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.2.7"
+    plugin_version = "2.2.8"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -545,6 +544,7 @@ class CloudAssistant(_PluginBase):
                         else:
                             retcode, _ = self.__transfer_file(file_path=mount_file,
                                                               target_file=target_return_file,
+                                                              file_size=file_size,
                                                               transfer_type="softlink")
                     else:
                         # 生成strm文件内容
