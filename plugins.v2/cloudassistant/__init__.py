@@ -1575,28 +1575,6 @@ class CloudAssistant(_PluginBase):
                             {
                                 'component': 'VCol',
                                 'props': {
-                                    'cols': 12
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VTextarea',
-                                        'props': {
-                                            'model': 'rmt_mediaext',
-                                            'label': '视频格式',
-                                            'rows': 2,
-                                            'placeholder': ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {
                                     'cols': 12,
                                     'md': 4
                                 },
@@ -1630,6 +1608,28 @@ class CloudAssistant(_PluginBase):
                                             'rows': '1',
                                             'label': '媒体库路径映射',
                                             'placeholder': 'MoviePilot本地文件路径:Emby文件路径（多组路径英文逗号拼接）'
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextarea',
+                                        'props': {
+                                            'model': 'rmt_mediaext',
+                                            'label': '视频格式',
+                                            'rows': 2,
+                                            'placeholder': ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
                                         }
                                     }
                                 ]
