@@ -1072,7 +1072,7 @@ class CloudAssistant(_PluginBase):
 
         logger.info("云盘助手清理无效软连接完成！")
 
-    def __refresh_emby_file(self, strm_file: str):
+    def __refresh_emby_file(self, changed_file: str):
         """
         通知emby刷新文件
         """
@@ -1081,21 +1081,21 @@ class CloudAssistant(_PluginBase):
             logger.error("未配置Emby媒体服务器")
             return
 
-        strm_file = self.__get_path(paths=self._emby_paths, file_path=strm_file)
+        changed_file = self.__get_path(paths=self._emby_paths, file_path=changed_file)
         for emby_name, emby_server in emby_servers.items():
             emby = emby_server.instance
             self._EMBY_USER = emby_server.instance.get_user()
             self._EMBY_APIKEY = emby_server.config.config.get("apikey")
             self._EMBY_HOST = emby_server.config.config.get("host")
 
-            logger.info(f"开始通知媒体服务器 {emby_name} 刷新新增文件 {strm_file}")
+            logger.info(f"开始通知媒体服务器 {emby_name} 刷新新增文件 {changed_file}")
             try:
                 res = emby.post_data(
                     url=f'[HOST]emby/Library/Media/Updated?api_key=[APIKEY]&reqformat=json',
                     data=json.dumps({
                         "Updates": [
                             {
-                                "Path": strm_file,
+                                "Path": changed_file,
                                 "UpdateType": "Created",
                             }
                         ]
@@ -1107,7 +1107,7 @@ class CloudAssistant(_PluginBase):
                 if res and res.status_code in [200, 204]:
                     return True
                 else:
-                    logger.error(f"通知媒体服务器 {emby_name} 刷新新增文件 {strm_file} 失败，错误码：{res.status_code}")
+                    logger.error(f"通知媒体服务器 {emby_name} 刷新新增文件 {changed_file} 失败，错误码：{res.status_code}")
                     return False
             except Exception as err:
                 logger.error(f"通知媒体服务器刷新新增文件失败：{str(err)}")
