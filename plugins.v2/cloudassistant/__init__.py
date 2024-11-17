@@ -64,7 +64,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.2.8"
+    plugin_version = "2.2.9"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -103,6 +103,7 @@ class CloudAssistant(_PluginBase):
     _115_cookie = None
     _115_client = None
     _115_fs = None
+    _emby_paths = {}
     _rmt_mediaext = ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
 
     # 退出事件
@@ -167,6 +168,9 @@ class CloudAssistant(_PluginBase):
             self._rmt_mediaext = config.get(
                 "rmt_mediaext") or ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
             self._mediaservers = config.get("mediaservers") or []
+            if config.get("emby_path"):
+                for path in str(config.get("emby_path")).split(","):
+                    self._emby_paths[path.split(":")[0]] = path.split(":")[1]
 
             # 清理插件历史
             if self._clean:
@@ -430,7 +434,7 @@ class CloudAssistant(_PluginBase):
 
                 # 命中过滤关键字不处理
                 if self._exclude_keywords:
-                    for keyword in self._exclude_keywords.split("\n"):
+                    for keyword in self._exclude_keywords.split(","):
                         if keyword and re.findall(keyword, event_path):
                             logger.info(f"{event_path} 命中过滤关键字 {keyword}，不处理")
                             return
@@ -576,7 +580,9 @@ class CloudAssistant(_PluginBase):
                 if retcode == 0:
                     transferhis = self.__get_transferhis_by_dest(db=None, dest_path=str(file_path))
                     if transferhis and self._refresh:
-                        self.__refresh_emby(transferhis)
+                        # self.__refresh_emby(transferhis)
+                        target_return_file = self.__get_path(paths=self._emby_paths, file_path=target_return_file)
+                        self.__refresh_emby_file(target_return_file)
 
                     # 是否删除本地历史
                     if str(delete_history) == "true":
@@ -758,6 +764,18 @@ class CloudAssistant(_PluginBase):
                 if not files:
                     logger.warn(f"删除源文件空目录：{file_dir}")
                     shutil.rmtree(file_dir, ignore_errors=True)
+
+    def __get_path(self, paths, file_path: str):
+        """
+        路径转换
+        """
+        if paths and paths.keys():
+            for library_path in paths.keys():
+                if str(file_path).startswith(str(library_path)):
+                    # 替换网盘路径
+                    return str(file_path).replace(str(library_path), str(paths.get(str(library_path))))
+        # 未匹配到路径，返回原路径
+        return file_path
 
     @staticmethod
     def __get_file_creation_time(file_path):
@@ -1053,6 +1071,47 @@ class CloudAssistant(_PluginBase):
             logger.info(f"{return_path} 处理无效软连接完成！")
 
         logger.info("云盘助手清理无效软连接完成！")
+
+    def __refresh_emby_file(self, strm_file: str):
+        """
+        通知emby刷新文件
+        """
+        emby_servers = self.mediaserver_helper.get_services(name_filters=self._mediaservers, type_filter="emby")
+        if not emby_servers:
+            logger.error("未配置Emby媒体服务器")
+            return
+
+        strm_file = self.__get_path(paths=self._emby_paths, file_path=strm_file)
+        for emby_name, emby_server in emby_servers.items():
+            emby = emby_server.instance
+            self._EMBY_USER = emby_server.instance.get_user()
+            self._EMBY_APIKEY = emby_server.config.config.get("apikey")
+            self._EMBY_HOST = emby_server.config.config.get("host")
+
+            logger.info(f"开始通知媒体服务器 {emby_name} 刷新新增文件 {strm_file}")
+            try:
+                res = emby.post_data(
+                    url=f'[HOST]emby/Library/Media/Updated?api_key=[APIKEY]&reqformat=json',
+                    data=json.dumps({
+                        "Updates": [
+                            {
+                                "Path": strm_file,
+                                "UpdateType": "Created",
+                            }
+                        ]
+                    }),
+                    headers={
+                        "Content-Type": "application/json"
+                    }
+                )
+                if res and res.status_code in [200, 204]:
+                    return True
+                else:
+                    logger.error(f"通知媒体服务器 {emby_name} 刷新新增文件 {strm_file} 失败，错误码：{res.status_code}")
+                    return False
+            except Exception as err:
+                logger.error(f"通知媒体服务器刷新新增文件失败：{str(err)}")
+            return False
 
     def __refresh_emby(self, transferinfo):
         """
@@ -1481,28 +1540,6 @@ class CloudAssistant(_PluginBase):
                                 },
                                 'content': [
                                     {
-                                        'component': 'VSelect',
-                                        'props': {
-                                            'multiple': True,
-                                            'chips': True,
-                                            'clearable': True,
-                                            'model': 'mediaservers',
-                                            'label': '媒体服务器',
-                                            'items': [{"title": config.name, "value": config.name}
-                                                      for config in self.mediaserver_helper.get_configs().values() if
-                                                      config.type == "emby"]
-                                        }
-                                    }
-                                ]
-                            },
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                    'md': 4
-                                },
-                                'content': [
-                                    {
                                         'component': 'VTextField',
                                         'props': {
                                             'model': 'interval',
@@ -1512,15 +1549,11 @@ class CloudAssistant(_PluginBase):
                                     }
                                 ]
                             },
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
-                        'content': [
                             {
                                 'component': 'VCol',
                                 'props': {
                                     'cols': 12,
+                                    'md': 8
                                 },
                                 'content': [
                                     {
@@ -1528,8 +1561,8 @@ class CloudAssistant(_PluginBase):
                                         'props': {
                                             'model': 'exclude_keywords',
                                             'label': '排除关键词',
-                                            'rows': 2,
-                                            'placeholder': '每一行一个关键词'
+                                            'rows': 1,
+                                            'placeholder': '多个逗号拼接'
                                         }
                                     }
                                 ]
@@ -1552,6 +1585,51 @@ class CloudAssistant(_PluginBase):
                                             'label': '视频格式',
                                             'rows': 2,
                                             'placeholder': ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        'component': 'VRow',
+                        'content': [
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 8
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VTextarea',
+                                        'props': {
+                                            'model': 'emby_path',
+                                            'rows': '1',
+                                            'label': '媒体库路径映射',
+                                            'placeholder': 'MoviePilot本地文件路径:Emby文件路径（多组路径英文逗号拼接）'
+                                        }
+                                    }
+                                ]
+                            },
+                            {
+                                'component': 'VCol',
+                                'props': {
+                                    'cols': 12,
+                                    'md': 4
+                                },
+                                'content': [
+                                    {
+                                        'component': 'VSelect',
+                                        'props': {
+                                            'multiple': True,
+                                            'chips': True,
+                                            'clearable': True,
+                                            'model': 'mediaservers',
+                                            'label': '媒体服务器',
+                                            'items': [{"title": config.name, "value": config.name}
+                                                      for config in self.mediaserver_helper.get_configs().values() if
+                                                      config.type == "emby"]
                                         }
                                     }
                                 ]
@@ -1732,6 +1810,7 @@ class CloudAssistant(_PluginBase):
             "exclude_keywords": "",
             "interval": 60,
             "cron": "",
+            "emby_path": "",
             "invalid_cron": "",
             "update_cron": "",
             "dir_confs": json.dumps(CloudAssistant.example, indent=4, ensure_ascii=False),
