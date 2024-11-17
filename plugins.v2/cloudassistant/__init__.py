@@ -580,9 +580,9 @@ class CloudAssistant(_PluginBase):
                 if retcode == 0:
                     transferhis = self.__get_transferhis_by_dest(db=None, dest_path=str(file_path))
                     if transferhis and self._refresh:
-                        # self.__refresh_emby(transferhis)
-                        target_return_file = self.__get_path(paths=self._emby_paths, file_path=target_return_file)
-                        self.__refresh_emby_file(target_return_file)
+                        self.__refresh_emby(transferhis)
+                        # target_return_file = self.__get_path(paths=self._emby_paths, file_path=target_return_file)
+                        # self.__refresh_emby_file(target_return_file)
 
                     # 是否删除本地历史
                     if str(delete_history) == "true":
