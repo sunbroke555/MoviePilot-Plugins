@@ -64,7 +64,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.2.9"
+    plugin_version = "2.3.0"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -629,7 +629,7 @@ class CloudAssistant(_PluginBase):
             # 替换路径中的\为/
             cloud_file = cloud_file.replace("\\", "/")
             # 对盘符之后的所有内容进行url转码
-            cloud_file = urllib.parse.quote(cloud_file, safe='')
+            # cloud_file = urllib.parse.quote(cloud_file, safe='')
             return format_str.replace("{cloud_file}", cloud_file)
         else:
             return None
