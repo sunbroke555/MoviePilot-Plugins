@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import traceback
+import urllib
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -63,7 +64,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.3.1"
+    plugin_version = "2.3.0"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -962,15 +963,15 @@ class CloudAssistant(_PluginBase):
                     return 1, None
         else:
             # 如果是文件夹
-            if not Path(target_file).suffix:
+            if Path(target_file).is_dir():
                 if not Path(target_file).exists():
                     logger.info(f"创建目标文件夹 {target_file}")
-                    os.makedirs(target_file, exist_ok=True)
+                    os.makedirs(target_file)
                     return 1, None
             else:
                 if not Path(target_file).parent.exists():
                     logger.info(f"创建目标文件夹 {Path(target_file).parent}")
-                    os.makedirs(str(Path(target_file).parent), exist_ok=True)
+                    os.makedirs(Path(target_file).parent)
 
                 # 媒体文件转移
                 retcode, retmsg = self.__transfer_command(file_path, Path(target_file), transfer_type)
@@ -1106,8 +1107,7 @@ class CloudAssistant(_PluginBase):
                 if res and res.status_code in [200, 204]:
                     return True
                 else:
-                    logger.error(
-                        f"通知媒体服务器 {emby_name} 刷新新增文件 {changed_file} 失败，错误码：{res.status_code}")
+                    logger.error(f"通知媒体服务器 {emby_name} 刷新新增文件 {changed_file} 失败，错误码：{res.status_code}")
                     return False
             except Exception as err:
                 logger.error(f"通知媒体服务器刷新新增文件失败：{str(err)}")
