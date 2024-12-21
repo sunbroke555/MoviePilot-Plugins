@@ -3,11 +3,12 @@
     "name": "云盘助手",
     "description": "本地文件定时转移到云盘，软连接/strm回本地，定时清理无效软连接。",
     "labels": "云盘",
-    "version": "2.3.0",
+    "version": "2.3.1",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png",
     "author": "thsrite",
     "level": 1,
     "history": {
+      "v2.3.1": "目录设置支持自定义是否存储插件记录：plugin_history=true/false",
       "v2.3.0": "strm内容不编码",
       "v2.2.9": "修改刷新媒体库方法",
       "v2.2.8": "定时更新插件依赖、大于20g的文件不用py115上传",

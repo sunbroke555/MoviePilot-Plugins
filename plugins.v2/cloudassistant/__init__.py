@@ -64,7 +64,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.3.0"
+    plugin_version = "2.3.1"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -469,6 +469,8 @@ class CloudAssistant(_PluginBase):
                 src_preserve_hierarchy = monitor_dir.get("src_preserve_hierarchy") or 0
                 # 本地文件保留时间 （小时）
                 retention_time = monitor_dir.get("retention_time") or 0
+                # 是否保存插件历史
+                plugin_history = monitor_dir.get("plugin_history") or None
                 # strm 生成内容格式
                 strm_format = monitor_dir.get("strm_format")
                 if not self._monitor and retention_time > 0:
@@ -590,9 +592,11 @@ class CloudAssistant(_PluginBase):
                             self.__delete_history(transferhis)
 
                     # 3、存操作记录
-                    if (self._only_media_history and Path(file_path).suffix.lower() in [ext.strip() for ext in
-                                                                                        self._rmt_mediaext.split(",")]) \
-                            or not self._only_media_history:
+                    if (plugin_history is None or plugin_history == "true") and (
+                            (self._only_media_history and Path(file_path).suffix.lower() in [ext.strip() for ext in
+                                                                                             self._rmt_mediaext.split(
+                                                                                                 ",")]) \
+                            or not self._only_media_history):
                         history = self.get_data('history') or []
                         history.append({
                             "file_path": str(file_path),
@@ -1107,7 +1111,8 @@ class CloudAssistant(_PluginBase):
                 if res and res.status_code in [200, 204]:
                     return True
                 else:
-                    logger.error(f"通知媒体服务器 {emby_name} 刷新新增文件 {changed_file} 失败，错误码：{res.status_code}")
+                    logger.error(
+                        f"通知媒体服务器 {emby_name} 刷新新增文件 {changed_file} 失败，错误码：{res.status_code}")
                     return False
             except Exception as err:
                 logger.error(f"通知媒体服务器刷新新增文件失败：{str(err)}")
