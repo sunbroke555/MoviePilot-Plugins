@@ -7,7 +7,6 @@ import subprocess
 import threading
 import time
 import traceback
-import urllib
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -64,7 +63,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.3.1"
+    plugin_version = "2.3.2"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -529,15 +528,19 @@ class CloudAssistant(_PluginBase):
                                                  file_size=file_size,
                                                  target_file_115=mount_file.replace(str(mount_path), str(path_115)))
 
+                # 检查云盘文件是否存在
+                if not self.__check_file_exists(mount_path):
+                    logger.info(f"挂载目录文件 {mount_file} 不存在，不创建 {self._return_mode}")
+                    return
+
                 # 2、软连接或者strm回本地路径
                 target_return_file = str(file_path).replace(str(mon_path), str(return_path))
+                if not Path(target_return_file).parent.exists():
+                    Path(target_return_file).parent.mkdir(parents=True, exist_ok=True)
+                    logger.info(f"创建目录 {str(Path(target_return_file).parent)}")
+
                 if Path(target_return_file).suffix.lower() in [ext.strip() for ext in
                                                                self._rmt_mediaext.split(",")]:
-                    # 检查云盘文件是否存在
-                    if not self.__check_file_exists(mount_path):
-                        logger.info(f"挂载目录文件 {mount_file} 不存在，不创建 {self._return_mode}")
-                        return
-
                     # 媒体文件软连接
                     if str(self._return_mode) == "softlink":
                         # 检查软连接指向是否正确，如果不正确，修正
