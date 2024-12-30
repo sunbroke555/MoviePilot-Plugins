@@ -494,6 +494,7 @@ class CloudAssistant(_PluginBase):
                 logger.info(f"挂载目录文件 {file_path}")
                 mount_file = str(file_path).replace(str(mon_path), str(mount_path))
 
+                file_id = ""
                 # 上传cloud时，如果不是仅媒体文件，则全上传，如果是仅媒体文件，则只上传媒体文件
                 if str(upload_cloud) == "true" and (str(only_media) == "false" or (
                         str(only_media) == "true" and Path(file_path).suffix.lower() in [ext.strip() for ext in
