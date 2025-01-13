@@ -1507,27 +1507,6 @@ class CloudAssistant(_PluginBase):
                     },
                     {
                         'component': 'VRow',
-                        'content': [
-                            {
-                                'component': 'VCol',
-                                'props': {
-                                    'cols': 12,
-                                },
-                                'content': [
-                                    {
-                                        'component': 'VAlert',
-                                        'props': {
-                                            'type': 'error',
-                                            'variant': 'tonal',
-                                            'text': '插件没想公开，传的快，死的快。'
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        'component': 'VRow',
                         'props': {
                             'style': {
                                 'margin-top': '12px'
