@@ -7,6 +7,7 @@ import subprocess
 import threading
 import time
 import traceback
+import urllib.parse
 from pathlib import Path
 from typing import List, Tuple, Dict, Any, Optional
 
@@ -63,7 +64,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.3.3"
+    plugin_version = "2.3.4"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -130,6 +131,7 @@ class CloudAssistant(_PluginBase):
                 "overwrite": "false",
                 "upload_cloud": "true",
                 "strm_format": "",
+                "uriencode": "false",
                 "notify_url": ""
             }
         ]
@@ -472,6 +474,9 @@ class CloudAssistant(_PluginBase):
                 plugin_history = monitor_dir.get("plugin_history") or None
                 # strm 生成内容格式
                 strm_format = monitor_dir.get("strm_format")
+                # strm 内容是否url编码
+                uriencode = monitor_dir.get("uriencode") or "false"
+
                 if not self._monitor and retention_time > 0:
                     creation_time = self.__get_file_creation_time(file_path)
                     creation_datetime = datetime.datetime.fromtimestamp(creation_time)
@@ -561,7 +566,8 @@ class CloudAssistant(_PluginBase):
                         strm_content = self.__format_content(format_str=strm_format,
                                                              local_file=mount_file,
                                                              cloud_file=mount_file.replace(str(mount_path),
-                                                                                           str(path_115)))
+                                                                                           str(path_115)),
+                                                             uriencode=uriencode)
                         # 生成strm文件
                         retcode, target_return_file = self.__create_strm_file(strm_file=target_return_file,
                                                                               strm_content=strm_content)
@@ -627,17 +633,19 @@ class CloudAssistant(_PluginBase):
             logger.error("目录监控发生错误：%s - %s" % (str(e), traceback.format_exc()))
 
     @staticmethod
-    def __format_content(format_str: str, local_file: str, cloud_file: str):
+    def __format_content(format_str: str, local_file: str, cloud_file: str, uriencode: str):
         """
         格式化strm内容
         """
         if "{local_file}" in format_str:
             return format_str.replace("{local_file}", local_file)
         elif "{cloud_file}" in format_str:
-            # 替换路径中的\为/
-            cloud_file = cloud_file.replace("\\", "/")
-            # 对盘符之后的所有内容进行url转码
-            # cloud_file = urllib.parse.quote(cloud_file, safe='')
+            if uriencode == "true":
+                # 对盘符之后的所有内容进行url转码
+                cloud_file = urllib.parse.quote(cloud_file, safe='')
+            else:
+                # 替换路径中的\为/
+                cloud_file = cloud_file.replace("\\", "/")
             return format_str.replace("{cloud_file}", cloud_file)
         else:
             return None
