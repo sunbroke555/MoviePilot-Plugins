@@ -1,24 +1,23 @@
+import http.cookies
 import os
 import random
 import re
-import traceback
-from pathlib import Path
-
 import time
+import traceback
 from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, List, Dict, Tuple, Optional
 
 import pytz
+from app.core.config import settings
+from app.log import logger
+from app.plugins import _PluginBase
+from app.schemas import NotificationType
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright, Page, Error
 from cf_clearance import sync_stealth
-from app.core.config import settings
-from app.plugins import _PluginBase
-from typing import Any, List, Dict, Tuple, Optional
-from app.log import logger
-from app.schemas import NotificationType
-import http.cookies
+from playwright.sync_api import sync_playwright, Page, Error
 
 
 class SignIn98(_PluginBase):
@@ -29,7 +28,7 @@ class SignIn98(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/98tang.png"
     # 插件版本
-    plugin_version = "1.1.4"
+    plugin_version = "1.1.5"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -364,6 +363,8 @@ class SignIn98(_PluginBase):
 
         if '签到成功' in page.content():
             return True, "签到成功，获得2金钱。"
+        elif '请至少发表或回复一个帖子后再来签到' in page.content():
+            return False, "请至少发表或回复一个帖子后再来签到"
         else:
             return False, "校验签到验证码失败"
 
