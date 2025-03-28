@@ -28,7 +28,6 @@ from app.utils.string import StringUtils
 from app.utils.system import SystemUtils
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
-from p115 import P115Client
 from sqlalchemy.orm import Session
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
@@ -64,7 +63,7 @@ class CloudAssistant(_PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.3.4"
+    plugin_version = "2.3.5"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
@@ -100,9 +99,6 @@ class CloudAssistant(_PluginBase):
     _dirconf = {}
     _medias = {}
     _transfer_type = None
-    _115_cookie = None
-    _115_client = None
-    _115_fs = None
     _emby_paths = {}
     _rmt_mediaext = ".mp4, .mkv, .ts, .iso,.rmvb, .avi, .mov, .mpeg,.mpg, .wmv, .3gp, .asf, .m4v, .flv, .m2ts, .strm,.tp, .f4v"
 
@@ -112,7 +108,6 @@ class CloudAssistant(_PluginBase):
     example = {
         "transfer_type": "copy/move",
         "return_mode": "softlink",
-        "115_cookie": "",
         "monitor_dirs": [
             {
                 "retention_time": 0,
@@ -224,12 +219,7 @@ class CloudAssistant(_PluginBase):
                 #     except Exception as e:
                 #         logger.warn(f"未正确配置CloudDrive2，请检查配置：{e}")
                 #         return
-
                 self._transfer_type = dir_confs.get("transfer_type")
-                self._115_cookie = dir_confs.get("115_cookie")
-                if self._115_cookie:
-                    self._115_client = P115Client(self._115_cookie)
-                    self._115_fs = self._115_client.fs
                 self._return_mode = dir_confs.get("return_mode") or "softlink"
 
                 # 读取目录配置
@@ -522,17 +512,12 @@ class CloudAssistant(_PluginBase):
                                                               self._rmt_mediaext.split(",")]:
                             _, file_id = self.__transfer_file(file_path=file_path,
                                                               target_file=mount_file,
-                                                              transfer_type=self._transfer_type,
-                                                              file_size=file_size,
-                                                              target_file_115=mount_file.replace(str(mount_path),
-                                                                                                 str(path_115)))
+                                                              transfer_type=self._transfer_type)
                         else:
                             # 其他文件复制
                             self.__transfer_file(file_path=file_path,
                                                  target_file=mount_file,
-                                                 transfer_type="copy",
-                                                 file_size=file_size,
-                                                 target_file_115=mount_file.replace(str(mount_path), str(path_115)))
+                                                 transfer_type="copy")
 
                 # 检查云盘文件是否存在
                 if not self.__check_file_exists(mount_path):
@@ -559,7 +544,6 @@ class CloudAssistant(_PluginBase):
                         else:
                             retcode, _ = self.__transfer_file(file_path=mount_file,
                                                               target_file=target_return_file,
-                                                              file_size=file_size,
                                                               transfer_type="softlink")
                     else:
                         # 生成strm文件内容
@@ -948,52 +932,27 @@ class CloudAssistant(_PluginBase):
             link=settings.MP_DOMAIN('#/history')
         )
 
-    def __transfer_file(self, file_path, target_file, transfer_type, file_size, target_file_115=None):
+    def __transfer_file(self, file_path, target_file, transfer_type):
         """
         转移文件
         """
         logger.info(f"开始 {transfer_type} 文件 {str(file_path)} 到 {target_file}")
-        if target_file_115 and self._115_client and file_size <= 20 * 1024 * 1024 * 1024:
-            # 如果是文件夹
-            if Path(target_file).is_dir():
-                logger.info(f"检查并创建目标文件夹 {target_file}")
-                self._115_fs.makedirs(target_file_115, exist_ok=True)
+        # 如果是文件夹
+        if Path(target_file).is_dir():
+            if not Path(target_file).exists():
+                logger.info(f"创建目标文件夹 {target_file}")
+                os.makedirs(target_file)
                 return 1, None
-            else:
-                logger.info(f"检查并创建目标文件夹 {str(Path(target_file_115).parent)}")
-                self._115_fs.makedirs(str(Path(target_file_115).parent), exist_ok=True)
-                # 将文件上传到当前文件夹
-                self._115_fs.chdir(str(Path(target_file_115).parent))
-                cid = self._115_fs.getcid()
-                logger.info(f"上传文件 {file_path} 到 {str(Path(target_file_115).parent)} {cid}")
-                result = self._115_client.upload_file(file=file_path, pid=cid)
-                if result.get("state"):
-                    logger.info(f"上传文件 {file_path} 到 {str(Path(target_file_115).parent)} {cid} 成功")
-                    if transfer_type == "move":
-                        Path(file_path).unlink()
-                        logger.info(f"本地文件 {file_path} 已删除")
-                    return 0, cid
-                else:
-                    logger.error(
-                        f"上传文件 {file_path} 到 {str(Path(target_file_115).parent)} {cid} 失败，错误原因： {result.get('error')}")
-                    return 1, None
         else:
-            # 如果是文件夹
-            if Path(target_file).is_dir():
-                if not Path(target_file).exists():
-                    logger.info(f"创建目标文件夹 {target_file}")
-                    os.makedirs(target_file)
-                    return 1, None
-            else:
-                if not Path(target_file).parent.exists():
-                    logger.info(f"创建目标文件夹 {Path(target_file).parent}")
-                    os.makedirs(Path(target_file).parent)
+            if not Path(target_file).parent.exists():
+                logger.info(f"创建目标文件夹 {Path(target_file).parent}")
+                os.makedirs(Path(target_file).parent)
 
-                # 媒体文件转移
-                retcode, retmsg = self.__transfer_command(file_path, Path(target_file), transfer_type)
-                logger.info(
-                    f"媒体文件{str(file_path)} {transfer_type} 到 {target_file} {'成功' if retcode == 0 else '失败'} {retmsg}")
-                return retcode, None
+            # 媒体文件转移
+            retcode, retmsg = self.__transfer_command(file_path, Path(target_file), transfer_type)
+            logger.info(
+                f"媒体文件{str(file_path)} {transfer_type} 到 {target_file} {'成功' if retcode == 0 else '失败'} {retmsg}")
+            return retcode, None
 
     def __transfer_command(self, file_item: Path, target_file: Path, transfer_type: str):
         """
