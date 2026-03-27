@@ -3,11 +3,12 @@
     "name": "云盘助手",
     "description": "本地文件定时转移到云盘，软连接/strm回本地，定时清理无效软连接。",
     "labels": "云盘",
-    "version": "2.3.5",
+    "version": "2.3.6",
     "icon": "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png",
     "author": "thsrite",
     "level": 1,
     "history": {
+      "v2.3.6": "fix",
       "v2.3.5": "移除py115支持",
       "v2.3.4": "自定义开启url编码，增加变量uriencode:true/false(默认false)",
       "v2.3.3": "优化执行周期输入，需要MoviePilot v2.2.1+",
