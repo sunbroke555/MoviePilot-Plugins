@@ -21,7 +21,7 @@ from app.db import db_query, db_update
 from app.db.models import TransferHistory, DownloadHistory, DownloadFiles
 from app.helper.mediaserver import MediaServerHelper
 from app.log import logger
-from app.plugins import PluginBase
+from app.plugins import _PluginBase
 from app.schemas.types import EventType, SystemConfigKey, MediaType, NotificationType, MediaImageType
 from app.utils.http import RequestUtils
 from app.utils.string import StringUtils
@@ -55,7 +55,7 @@ class CloudFileMonitorHandler(FileSystemEventHandler):
                                 mon_path=self._watch_path, event_path=event.dest_path)
 
 
-class CloudAssistant(PluginBase):
+class CloudAssistant(_PluginBase):
     # 插件名称
     plugin_name = "云盘助手"
     # 插件描述
@@ -63,7 +63,7 @@ class CloudAssistant(PluginBase):
     # 插件图标
     plugin_icon = "https://raw.githubusercontent.com/thsrite/MoviePilot-Plugins/main/icons/cloudassistant.png"
     # 插件版本
-    plugin_version = "2.3.5"
+    plugin_version = "2.3.7"
     # 插件作者
     plugin_author = "thsrite"
     # 作者主页
