@@ -83,5 +83,19 @@
     "history": {
       "v1.0.4": "交互下载B站视频，调用BBDown"
     }
+  },
+  "TransferSeedCleaner": {
+    "v3": false,
+    "name": "整理后清理做种",
+    "description": "定时复核 MoviePilot 已成功整理的下载任务，确认源文件可安全清理后删除下载器中的种子及下载文件；默认仅预览。",
+    "labels": "文件整理,下载管理,做种",
+    "version": "1.0.0",
+    "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png",
+    "author": "sunbroke555",
+    "level": 1,
+    "release": false,
+    "history": {
+      "v1.0.0": "初版：成功整理记录与下载任务双重校验，定时复核后预览或清理种子和下载文件。"
+    }
   }
 }

@@ -180,3 +180,7 @@ cd2方式上传--strm回本地（暂时移除）
 - 媒体服务器内源文件路径 /mount/cloud/aliyun/emby`/tvshow/爸爸去哪儿/Season 5/14.特别版.mp4`
 
 - 监控配置为：/mount/cloud/aliyun/emby#/mnt/link/aliyun#/mount/cloud/aliyun/emby
+
+## 整理后清理做种（MoviePilot V2）
+
+在媒体整理成功后复核整个种子，确认可安全清理时删除 qBittorrent 或 Transmission 中的任务及下载文件。默认仅预览，可设置整理后等待时间与复核周期。软链接、未整理完或共用下载数据的任务会保留。安装和清理条件详见[插件说明](plugins.v2/transferseedcleaner/README.md)。
