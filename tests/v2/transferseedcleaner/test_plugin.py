@@ -3,6 +3,7 @@
 import importlib.util
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from unittest.mock import MagicMock
@@ -385,3 +386,147 @@ def test_new_overlapping_torrent_after_first_inspection_blocks_removal(runtime, 
     assert len(plugin.get_data("pending")) == 1
     reason = plugin.get_data("pending")[0]["reason"]
     assert "共用" in reason or "变化" in reason or "不一致" in reason
+
+
+def test_transfer_event_records_full_history_torrent_name_instead_of_file_name(runtime, plugin_module):
+    plugin, chain, event = runtime
+    history = plugin_module.DownloadHistoryOper().get_by_hash.return_value
+    history.torrent_name = "Show.S01.1080p.Complete.Pack"
+    event.event_data["name"] = "Show.S01E01.mkv"
+
+    plugin.on_transfer_complete(event)
+
+    assert plugin.get_data("pending")[0]["name"] == history.torrent_name
+    assert plugin.get_page()[1]["props"]["title"] == history.torrent_name
+    chain.remove_torrents.assert_not_called()
+
+
+def test_page_backfills_legacy_name_without_resetting_wait_or_querying_downloaders(
+    runtime, plugin_module, monkeypatch
+):
+    plugin, chain, _ = runtime
+    last_event = 1_700_000_000
+    monkeypatch.setattr(plugin_module.time, "time", lambda: last_event + 20)
+    history = plugin_module.DownloadHistoryOper().get_by_hash.return_value
+    history.torrent_name = "Show.S01.Complete.Pack"
+    plugin.save_data("pending", [{
+        "downloader": "qb", "hash": "abc123", "last_event": last_event,
+        "reason": "等待整理流程结束",
+    }])
+
+    props = plugin.get_page()[1]["props"]
+
+    assert props["title"] == history.torrent_name
+    assert "qb" in props["text"] and "abc123" in props["text"]
+    assert datetime.fromtimestamp(last_event).strftime("%Y-%m-%d %H:%M:%S") in props["text"]
+    assert datetime.fromtimestamp(last_event + 60).strftime("%Y-%m-%d %H:%M:%S") in props["text"]
+    assert plugin.get_data("pending")[0]["name"] == history.torrent_name
+    assert plugin.get_data("pending")[0]["last_event"] == last_event
+    chain.list_torrents.assert_not_called()
+    chain.torrent_files.assert_not_called()
+    chain.remove_torrents.assert_not_called()
+    plugin_module.DownloaderHelper.downloader.get_torrents.assert_not_called()
+
+
+@pytest.mark.parametrize("reason", ["等待整理流程结束", "等待最后一次整理后缓冲时间"])
+def test_page_wait_status_advances_when_grace_expires_without_a_scan(
+    runtime, plugin_module, monkeypatch, reason
+):
+    plugin, chain, _ = runtime
+    last_event = 1_700_000_000
+    current = {"time": last_event + 20}
+    monkeypatch.setattr(plugin_module.time, "time", lambda: current["time"])
+    plugin.save_data("pending", [{
+        "downloader": "qb", "hash": "abc123", "name": "Show.Complete.Pack",
+        "last_event": last_event, "reason": reason,
+    }])
+
+    waiting = plugin.get_page()[1]["props"]["text"]
+    assert "约 1 分钟" in waiting
+    assert "等待时间已满" not in waiting
+
+    current["time"] = last_event + 61
+    ready = plugin.get_page()[1]["props"]["text"]
+    assert "等待时间已满，待下一轮复核" in ready
+    assert plugin.get_data("pending")[0]["last_event"] == last_event
+    chain.remove_torrents.assert_not_called()
+
+
+def test_another_successful_file_event_restarts_the_torrents_grace_period(
+    runtime, plugin_module, monkeypatch
+):
+    plugin, chain, event = runtime
+    start = 1_700_000_000
+    current = {"time": start}
+    monkeypatch.setattr(plugin_module.time, "time", lambda: current["time"])
+    plugin.on_transfer_complete(event)
+
+    current["time"] = start + 40
+    plugin.on_transfer_complete(event)
+    current["time"] = start + 61
+    props = plugin.get_page()[1]["props"]
+
+    assert len(plugin.get_data("pending")) == 1
+    assert plugin.get_data("pending")[0]["last_event"] == start + 40
+    assert "约 1 分钟" in props["text"]
+    assert "等待时间已满" not in props["text"]
+    chain.remove_torrents.assert_not_called()
+
+
+def test_scan_caches_raw_torrent_title_during_wait_and_preserves_it_in_deletion_history(
+    runtime, plugin_module, monkeypatch
+):
+    plugin, chain, event = runtime
+    start = 1_700_000_000
+    current = {"time": start}
+    monkeypatch.setattr(plugin_module.time, "time", lambda: current["time"])
+    plugin_module.DownloadHistoryOper().get_by_hash.return_value.torrent_name = "History.Old.Pack"
+    torrent = chain.list_torrents.return_value[0]
+    torrent.title = "Show.S01.Complete.1080p.WEB-DL.Group"
+    torrent.name = "Show"
+    plugin.on_transfer_complete(event)
+
+    plugin.scan_pending()
+
+    assert plugin.get_data("pending")[0]["name"] == torrent.title
+    assert plugin.get_data("pending")[0]["last_event"] == start
+    assert plugin.get_page()[1]["props"]["title"] == torrent.title
+    chain.torrent_files.assert_not_called()
+    chain.remove_torrents.assert_not_called()
+
+    current["time"] = start + 61
+    plugin.scan_pending()
+
+    chain.remove_torrents.assert_called_once_with(
+        hashs="abc123", delete_file=True, downloader="qb"
+    )
+    assert plugin.get_data("pending") == []
+    assert plugin.get_data("history")[-1]["name"] == torrent.title
+    assert plugin.get_page()[1]["props"]["title"] == torrent.title
+
+
+@pytest.mark.parametrize("unavailable", ["missing", "different_downloader", "lookup_failure"])
+def test_unavailable_or_mismatched_history_name_keeps_hash_visible(
+    runtime, plugin_module, unavailable
+):
+    plugin, chain, event = runtime
+    lookup = plugin_module.DownloadHistoryOper().get_by_hash
+    if unavailable == "missing":
+        lookup.return_value = None
+    elif unavailable == "different_downloader":
+        lookup.return_value = SimpleNamespace(
+            downloader="another-qb", torrent_name="Wrong.Downloaders.Pack"
+        )
+    else:
+        lookup.side_effect = RuntimeError("history temporarily unavailable")
+    event.event_data["name"] = "Only.One.Episode.mkv"
+
+    plugin.on_transfer_complete(event)
+    props = plugin.get_page()[1]["props"]
+
+    assert props["title"] == "名称暂不可用"
+    assert "qb" in props["text"] and "abc123" in props["text"]
+    assert "Wrong.Downloaders.Pack" not in str(props)
+    assert "Only.One.Episode.mkv" not in str(props)
+    chain.list_torrents.assert_not_called()
+    chain.remove_torrents.assert_not_called()
