@@ -1,5 +1,6 @@
 """Exercise the V2 cleanup flow without a running MoviePilot or downloader."""
 
+import copy
 import importlib.util
 import sys
 import time
@@ -128,7 +129,7 @@ def runtime(tmp_path, plugin_module):
     plugin_module.TransferHistoryOper = lambda: transfer_oper
     plugin = plugin_module.TransferSeedCleaner()
     plugin.init_plugin({
-        "enabled": True, "dry_run": False, "wait_minutes": 1, "downloaders": ["qb"]
+        "enabled": True, "dry_run": False, "downloaders": ["qb"]
     })
     plugin.chain = chain
     event = plugin_module.Event({
@@ -139,11 +140,30 @@ def runtime(tmp_path, plugin_module):
     return plugin, chain, event
 
 
-def _age_pending(plugin):
-    """Move the event outside the intentional post-transfer grace period."""
-    pending = plugin.get_data("pending")
-    assert len(pending) == 1
-    pending[0]["last_event"] = time.time() - 120
+def _nodes(nodes, component=None):
+    """Traverse the MoviePilot component tree without relying on page positions."""
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        if component is None or node.get("component") == component:
+            yield node
+        content = node.get("content", [])
+        if isinstance(content, list):
+            yield from _nodes(content, component)
+
+
+def _page_text(page):
+    return "\n".join(
+        str(node.get("text", "")) + " " + str(node.get("props", {}).get("text", ""))
+        for node in _nodes(page)
+    )
+
+
+def _component_text(page, component):
+    return [
+        str(node.get("text", node.get("props", {}).get("text", "")))
+        for node in _nodes(page, component)
+    ]
 
 
 def test_transfer_event_only_queues_and_deduplicates(runtime):
@@ -181,7 +201,6 @@ def test_preview_marks_ready_candidate_without_deleting(runtime):
     plugin, chain, event = runtime
     plugin._dry_run = True
     plugin.on_transfer_complete(event)
-    _age_pending(plugin)
 
     plugin.scan_pending()
 
@@ -193,7 +212,6 @@ def test_preview_marks_ready_candidate_without_deleting(runtime):
 def test_ready_candidate_removes_exact_task_and_data_once(runtime):
     plugin, chain, event = runtime
     plugin.on_transfer_complete(event)
-    _age_pending(plugin)
 
     plugin.scan_pending()
     plugin.scan_pending()
@@ -208,7 +226,6 @@ def test_ready_candidate_removes_exact_task_and_data_once(runtime):
 def test_omitted_downloader_selection_keeps_existing_pending_task(runtime):
     plugin, chain, event = runtime
     plugin.on_transfer_complete(event)
-    _age_pending(plugin)
     plugin.init_plugin({"enabled": True, "dry_run": False, "wait_minutes": 1})
 
     plugin.scan_pending()
@@ -253,7 +270,7 @@ def test_only_selected_downloader_can_reach_delete(runtime, plugin_module, monke
     helper = SimpleNamespace(get_configs=lambda: configs, get_services=lambda: services)
     monkeypatch.setattr(plugin_module, "DownloaderHelper", lambda: helper)
     plugin.init_plugin({
-        "enabled": True, "dry_run": False, "wait_minutes": 1,
+        "enabled": True, "dry_run": False,
         "downloaders": ["qb", "tr"],
     })
     plugin.on_transfer_complete(qb_event)
@@ -263,10 +280,8 @@ def test_only_selected_downloader_can_reach_delete(runtime, plugin_module, monke
     }))
     pending = plugin.get_data("pending")
     assert len(pending) == 2
-    for item in pending:
-        item["last_event"] = time.time() - 120
     plugin.init_plugin({
-        "enabled": True, "dry_run": False, "wait_minutes": 1,
+        "enabled": True, "dry_run": False,
         "downloaders": ["qb"],
     })
 
@@ -284,7 +299,6 @@ def test_failed_removal_keeps_candidate_for_retry(runtime):
     plugin, chain, event = runtime
     chain.remove_torrents.side_effect = [False, True]
     plugin.on_transfer_complete(event)
-    _age_pending(plugin)
 
     plugin.scan_pending()
 
@@ -303,7 +317,6 @@ def test_failed_removal_keeps_candidate_for_retry(runtime):
 def test_downloader_inventory_failure_prevents_deletion(runtime, plugin_module, failure):
     plugin, chain, event = runtime
     plugin.on_transfer_complete(event)
-    _age_pending(plugin)
     downloader = plugin_module.DownloaderHelper.downloader
     if failure == "error_flag":
         downloader.get_torrents.return_value = ([], True)
@@ -322,7 +335,6 @@ def test_downloader_inventory_failure_prevents_deletion(runtime, plugin_module, 
 def test_mismatched_torrent_snapshots_prevent_deletion(runtime, plugin_module, difference):
     plugin, chain, event = runtime
     plugin.on_transfer_complete(event)
-    _age_pending(plugin)
     if difference == "raw_has_extra":
         plugin_module.DownloaderHelper.downloader.get_torrents.return_value = (
             [SimpleNamespace(hash="abc123"), SimpleNamespace(hash="other")], False
@@ -343,7 +355,6 @@ def test_rtorrent_candidate_is_retained_without_deleting_directory(runtime, plug
     plugin, chain, event = runtime
     plugin_module.DownloaderHelper.service_type = "rtorrent"
     plugin.on_transfer_complete(event)
-    _age_pending(plugin)
 
     plugin.scan_pending()
 
@@ -356,7 +367,6 @@ def test_rtorrent_candidate_is_retained_without_deleting_directory(runtime, plug
 def test_new_overlapping_torrent_after_first_inspection_blocks_removal(runtime, plugin_module):
     plugin, chain, event = runtime
     plugin.on_transfer_complete(event)
-    _age_pending(plugin)
     original_inspect = plugin_module.inspect_candidate
     downloader = plugin_module.DownloaderHelper.downloader
     first_inspection = False
@@ -388,6 +398,101 @@ def test_new_overlapping_torrent_after_first_inspection_blocks_removal(runtime, 
     assert "共用" in reason or "变化" in reason or "不一致" in reason
 
 
+def test_form_exposes_only_automatic_cleanup_interval_and_uses_it_for_service(runtime):
+    plugin, _, _ = runtime
+    plugin.init_plugin({"enabled": True, "interval_minutes": 7, "wait_minutes": 60})
+
+    form, defaults = plugin.get_form()
+    fields = [node["props"] for node in _nodes(form, "VTextField")]
+
+    assert [(field["model"], field["label"]) for field in fields] == [
+        ("interval_minutes", "自动清理间隔（分钟）")
+    ]
+    assert defaults["interval_minutes"] == 10
+    assert "wait_minutes" not in defaults
+    assert plugin.get_service()[0]["trigger"].kwargs == {"minutes": 7}
+
+
+def test_legacy_wait_minutes_does_not_delay_fresh_event_until_next_scan(runtime):
+    plugin, chain, event = runtime
+    plugin.init_plugin({
+        "enabled": True, "dry_run": False, "downloaders": ["qb"], "wait_minutes": 1440,
+    })
+
+    plugin.on_transfer_complete(event)
+    chain.remove_torrents.assert_not_called()
+    plugin.scan_pending()
+
+    chain.remove_torrents.assert_called_once_with(
+        hashs="abc123", delete_file=True, downloader="qb"
+    )
+
+
+def test_new_transfer_event_during_inspection_invalidates_scan(runtime, plugin_module, monkeypatch):
+    plugin, chain, event = runtime
+    # Real plugin storage serializes records: the scan and a new event read separate objects.
+    monkeypatch.setattr(plugin, "get_data", lambda key: copy.deepcopy(plugin._data.get(key)))
+    monkeypatch.setattr(plugin, "save_data", lambda key, value: plugin._data.update({key: copy.deepcopy(value)}))
+    current = {"time": 1_700_000_000.0}
+    monkeypatch.setattr(plugin_module.time, "time", lambda: current["time"])
+    plugin.on_transfer_complete(event)
+    original_inspect = plugin_module.inspect_candidate
+    received_new_event = False
+
+    def inspect_then_receive_another_event(**arguments):
+        nonlocal received_new_event
+        result = original_inspect(**arguments)
+        if not received_new_event:
+            assert result.ready, result.reason
+            received_new_event = True
+            current["time"] += 1
+            plugin.on_transfer_complete(event)
+        return result
+
+    monkeypatch.setattr(plugin_module, "inspect_candidate", inspect_then_receive_another_event)
+    plugin.scan_pending()
+
+    assert received_new_event
+    assert plugin.get_data("pending")[0]["last_event"] == current["time"]
+    chain.remove_torrents.assert_not_called()
+
+    plugin.scan_pending()
+    chain.remove_torrents.assert_called_once()
+
+
+def test_multifile_torrent_waits_until_every_file_is_organized(runtime, plugin_module):
+    plugin, chain, event = runtime
+    first_record = plugin_module.TransferHistoryOper().list_by_hash.return_value[0]
+    second_source = Path(first_record.src).with_name("Show.S01E02.mkv")
+    second_source.write_bytes(b"second episode")
+    chain.torrent_files.return_value.append(SimpleNamespace(
+        name=second_source.name, selected=True, priority=1,
+    ))
+    plugin_module.DownloadHistoryOper().get_files_by_hash.return_value.append(SimpleNamespace(
+        filepath=second_source.name, fullpath=str(second_source), downloader="qb", state=1,
+    ))
+    plugin.on_transfer_complete(event)
+
+    plugin.scan_pending()
+
+    chain.remove_torrents.assert_not_called()
+    assert plugin.get_data("pending")[0]["reason"] == "仍有文件没有整理记录"
+    assert "未整理完成" in _page_text(plugin.get_page())
+
+    second_destination = Path(first_record.dest).with_name(second_source.name)
+    second_destination.write_bytes(second_source.read_bytes())
+    plugin_module.TransferHistoryOper().list_by_hash.return_value.append(SimpleNamespace(
+        id=2, src=str(second_source), dest=str(second_destination), downloader="qb",
+        status=True, mode="copy",
+    ))
+    plugin.on_transfer_complete(event)
+    plugin.scan_pending()
+
+    chain.remove_torrents.assert_called_once_with(
+        hashs="abc123", delete_file=True, downloader="qb"
+    )
+
+
 def test_transfer_event_records_full_history_torrent_name_instead_of_file_name(runtime, plugin_module):
     plugin, chain, event = runtime
     history = plugin_module.DownloadHistoryOper().get_by_hash.return_value
@@ -397,16 +502,13 @@ def test_transfer_event_records_full_history_torrent_name_instead_of_file_name(r
     plugin.on_transfer_complete(event)
 
     assert plugin.get_data("pending")[0]["name"] == history.torrent_name
-    assert plugin.get_page()[1]["props"]["title"] == history.torrent_name
+    assert history.torrent_name in _component_text(plugin.get_page(), "VListItemTitle")
     chain.remove_torrents.assert_not_called()
 
 
-def test_page_backfills_legacy_name_without_resetting_wait_or_querying_downloaders(
-    runtime, plugin_module, monkeypatch
-):
+def test_page_backfills_legacy_name_without_resetting_event_or_querying_downloaders(runtime, plugin_module):
     plugin, chain, _ = runtime
     last_event = 1_700_000_000
-    monkeypatch.setattr(plugin_module.time, "time", lambda: last_event + 20)
     history = plugin_module.DownloadHistoryOper().get_by_hash.return_value
     history.torrent_name = "Show.S01.Complete.Pack"
     plugin.save_data("pending", [{
@@ -414,12 +516,12 @@ def test_page_backfills_legacy_name_without_resetting_wait_or_querying_downloade
         "reason": "等待整理流程结束",
     }])
 
-    props = plugin.get_page()[1]["props"]
+    page = plugin.get_page()
+    text = _page_text(page)
 
-    assert props["title"] == history.torrent_name
-    assert "qb" in props["text"] and "abc123" in props["text"]
-    assert datetime.fromtimestamp(last_event).strftime("%Y-%m-%d %H:%M:%S") in props["text"]
-    assert datetime.fromtimestamp(last_event + 60).strftime("%Y-%m-%d %H:%M:%S") in props["text"]
+    assert history.torrent_name in _component_text(page, "VListItemTitle")
+    assert "qb" in text and "abc123" in text
+    assert datetime.fromtimestamp(last_event).strftime("%Y-%m-%d %H:%M:%S") in text
     assert plugin.get_data("pending")[0]["name"] == history.torrent_name
     assert plugin.get_data("pending")[0]["last_event"] == last_event
     chain.list_torrents.assert_not_called()
@@ -428,59 +530,36 @@ def test_page_backfills_legacy_name_without_resetting_wait_or_querying_downloade
     plugin_module.DownloaderHelper.downloader.get_torrents.assert_not_called()
 
 
-@pytest.mark.parametrize("reason", ["等待整理流程结束", "等待最后一次整理后缓冲时间"])
-def test_page_wait_status_advances_when_grace_expires_without_a_scan(
-    runtime, plugin_module, monkeypatch, reason
-):
+@pytest.mark.parametrize("reason", [
+    "等待整理流程结束", "等待最后一次整理后缓冲时间", "等待整理后缓冲时间",
+    "已收到整理成功记录，等待定时复核",
+])
+def test_legacy_wait_reason_displays_pending_without_countdown(runtime, reason):
     plugin, chain, _ = runtime
-    last_event = 1_700_000_000
-    current = {"time": last_event + 20}
-    monkeypatch.setattr(plugin_module.time, "time", lambda: current["time"])
     plugin.save_data("pending", [{
         "downloader": "qb", "hash": "abc123", "name": "Show.Complete.Pack",
-        "last_event": last_event, "reason": reason,
+        "last_event": time.time(), "reason": reason,
     }])
 
-    waiting = plugin.get_page()[1]["props"]["text"]
-    assert "约 1 分钟" in waiting
-    assert "等待时间已满" not in waiting
+    text = _page_text(plugin.get_page())
 
-    current["time"] = last_event + 61
-    ready = plugin.get_page()[1]["props"]["text"]
-    assert "等待时间已满，待下一轮复核" in ready
-    assert plugin.get_data("pending")[0]["last_event"] == last_event
+    assert "待检查" in text
+    assert reason not in text
+    assert "最早可复核" not in text
+    assert "缓冲" not in text
+    assert "剩余约" not in text
     chain.remove_torrents.assert_not_called()
 
 
-def test_another_successful_file_event_restarts_the_torrents_grace_period(
-    runtime, plugin_module, monkeypatch
-):
+def test_scan_caches_raw_torrent_title_and_preserves_both_names_in_deletion_history(runtime, plugin_module):
     plugin, chain, event = runtime
-    start = 1_700_000_000
-    current = {"time": start}
-    monkeypatch.setattr(plugin_module.time, "time", lambda: current["time"])
-    plugin.on_transfer_complete(event)
-
-    current["time"] = start + 40
-    plugin.on_transfer_complete(event)
-    current["time"] = start + 61
-    props = plugin.get_page()[1]["props"]
-
-    assert len(plugin.get_data("pending")) == 1
-    assert plugin.get_data("pending")[0]["last_event"] == start + 40
-    assert "约 1 分钟" in props["text"]
-    assert "等待时间已满" not in props["text"]
-    chain.remove_torrents.assert_not_called()
-
-
-def test_scan_caches_raw_torrent_title_during_wait_and_preserves_it_in_deletion_history(
-    runtime, plugin_module, monkeypatch
-):
-    plugin, chain, event = runtime
-    start = 1_700_000_000
-    current = {"time": start}
-    monkeypatch.setattr(plugin_module.time, "time", lambda: current["time"])
+    plugin._dry_run = True
     plugin_module.DownloadHistoryOper().get_by_hash.return_value.torrent_name = "History.Old.Pack"
+    record = plugin_module.TransferHistoryOper().list_by_hash.return_value[0]
+    final_name = "示例剧 - S01E01 - 第一集.mkv"
+    final_destination = Path(record.dest).with_name(final_name)
+    Path(record.dest).rename(final_destination)
+    record.dest = str(final_destination)
     torrent = chain.list_torrents.return_value[0]
     torrent.title = "Show.S01.Complete.1080p.WEB-DL.Group"
     torrent.name = "Show"
@@ -488,27 +567,30 @@ def test_scan_caches_raw_torrent_title_during_wait_and_preserves_it_in_deletion_
 
     plugin.scan_pending()
 
-    assert plugin.get_data("pending")[0]["name"] == torrent.title
-    assert plugin.get_data("pending")[0]["last_event"] == start
-    assert plugin.get_page()[1]["props"]["title"] == torrent.title
-    chain.torrent_files.assert_not_called()
+    pending = plugin.get_data("pending")[0]
+    assert pending["name"] == torrent.title
+    assert pending["organized_names"] == [final_name]
+    assert torrent.title in _component_text(plugin.get_page(), "VListItemTitle")
+    assert "整理后：" + final_name in _component_text(plugin.get_page(), "VListItemSubtitle")
+    assert "可清理（预览）" in _page_text(plugin.get_page())
     chain.remove_torrents.assert_not_called()
 
-    current["time"] = start + 61
+    plugin._dry_run = False
     plugin.scan_pending()
 
     chain.remove_torrents.assert_called_once_with(
         hashs="abc123", delete_file=True, downloader="qb"
     )
     assert plugin.get_data("pending") == []
-    assert plugin.get_data("history")[-1]["name"] == torrent.title
-    assert plugin.get_page()[1]["props"]["title"] == torrent.title
+    history = plugin.get_data("history")[-1]
+    assert history["name"] == torrent.title
+    assert history["organized_names"] == [final_name]
+    assert torrent.title in _component_text(plugin.get_page(), "VListItemTitle")
+    assert "整理后：" + final_name in _component_text(plugin.get_page(), "VListItemSubtitle")
 
 
 @pytest.mark.parametrize("unavailable", ["missing", "different_downloader", "lookup_failure"])
-def test_unavailable_or_mismatched_history_name_keeps_hash_visible(
-    runtime, plugin_module, unavailable
-):
+def test_unavailable_or_mismatched_history_name_keeps_hash_visible(runtime, plugin_module, unavailable):
     plugin, chain, event = runtime
     lookup = plugin_module.DownloadHistoryOper().get_by_hash
     if unavailable == "missing":
@@ -522,11 +604,106 @@ def test_unavailable_or_mismatched_history_name_keeps_hash_visible(
     event.event_data["name"] = "Only.One.Episode.mkv"
 
     plugin.on_transfer_complete(event)
-    props = plugin.get_page()[1]["props"]
+    page = plugin.get_page()
+    text = _page_text(page)
 
-    assert props["title"] == "名称暂不可用"
-    assert "qb" in props["text"] and "abc123" in props["text"]
-    assert "Wrong.Downloaders.Pack" not in str(props)
-    assert "Only.One.Episode.mkv" not in str(props)
+    assert "名称暂不可用" in _component_text(page, "VListItemTitle")
+    assert "qb" in text and "abc123" in text
+    assert "Wrong.Downloaders.Pack" not in str(page)
+    assert "Only.One.Episode.mkv" not in str(page)
     chain.list_torrents.assert_not_called()
     chain.remove_torrents.assert_not_called()
+
+
+def test_subtitle_uses_deduplicated_final_filenames_for_multiple_episodes(runtime, plugin_module):
+    plugin, _, event = runtime
+    records = plugin_module.TransferHistoryOper().list_by_hash.return_value
+    records[:] = [
+        SimpleNamespace(id=1, src="/source/E01.mkv", dest="/library/剧集 - S01E01.mkv",
+                        downloader="qb", status=True, download_hash="abc123"),
+        SimpleNamespace(id=2, src="/source/E02.mkv", dest="/library/剧集 - S01E02.mkv",
+                        downloader="qb", status=True, download_hash="ABC123"),
+        SimpleNamespace(id=3, src="/source/E01.mkv", dest="/library/剧集 - S01E01.mkv",
+                        downloader="qb", status=True, download_hash="abc123"),
+    ]
+    plugin.on_transfer_complete(event)
+
+    page = plugin.get_page()
+
+    names = plugin.get_data("pending")[0]["organized_names"]
+    assert set(names) == {"剧集 - S01E01.mkv", "剧集 - S01E02.mkv"}
+    assert len(names) == 2
+    assert any(text.startswith("整理后：") and "共 2 个已整理文件" in text
+               for text in _component_text(page, "VListItemSubtitle"))
+
+
+def test_organized_names_exclude_other_task_and_latest_failed_transfer(runtime, plugin_module):
+    plugin, _, event = runtime
+    records = plugin_module.TransferHistoryOper().list_by_hash.return_value
+    records[:] = [
+        SimpleNamespace(id=1, src="/source/E01.mkv", dest="/library/stale-success.mkv",
+                        downloader="qb", status=True, download_hash="abc123"),
+        SimpleNamespace(id=2, src="/source/E01.mkv", dest="/library/latest-failure.mkv",
+                        downloader="qb", status=False, download_hash="abc123"),
+        SimpleNamespace(id=3, src="/source/E02.mkv", dest="/library/wrong-downloader.mkv",
+                        downloader="other-qb", status=True, download_hash="abc123"),
+        SimpleNamespace(id=4, src="/source/E03.mkv", dest="/library/wrong-hash.mkv",
+                        downloader="qb", status=True, download_hash="another-hash"),
+    ]
+    plugin.on_transfer_complete(event)
+
+    page = plugin.get_page()
+
+    assert plugin.get_data("pending")[0]["organized_names"] == []
+    assert "暂无成功整理名称" in _page_text(page)
+    for name in ["stale-success", "latest-failure", "wrong-downloader", "wrong-hash"]:
+        assert name not in str(page)
+
+
+def test_successful_empty_name_lookup_clears_stale_cache_but_exception_preserves_it(runtime, plugin_module):
+    plugin, _, event = runtime
+    plugin.on_transfer_complete(event)
+    plugin.get_page()
+    assert plugin.get_data("pending")[0]["organized_names"] == ["Show.mkv"]
+    lookup = plugin_module.TransferHistoryOper().list_by_hash
+    lookup.side_effect = RuntimeError("history temporarily unavailable")
+
+    page = plugin.get_page()
+    assert "整理后：Show.mkv" in _component_text(page, "VListItemSubtitle")
+    assert plugin.get_data("pending")[0]["organized_names"] == ["Show.mkv"]
+
+    lookup.side_effect = None
+    lookup.return_value = []
+    page = plugin.get_page()
+    assert plugin.get_data("pending")[0]["organized_names"] == []
+    assert "暂无成功整理名称" in _page_text(page)
+
+
+def test_record_pages_are_neutral_and_limit_each_list_to_five_entries(runtime):
+    plugin, _, _ = runtime
+    plugin.save_data("pending", [{
+        "downloader": "qb", "hash": f"pending-{index}", "name": f"Complete.Torrent.Name.{index}",
+        "last_event": time.time(), "reason": "待检查",
+    } for index in range(12)])
+    plugin.save_data("history", [{
+        "downloader": "qb", "hash": f"history-{index}", "name": f"Deleted.Torrent.Name.{index}",
+        "time": "2026-10-14 12:00:00", "action": "deleted", "message": "已删除下载器任务及下载文件",
+        "organized_names": [f"剧集 - S01E{index + 1:02}.mkv"],
+    } for index in range(8)])
+
+    page = plugin.get_page()
+
+    assert not list(_nodes(page, "VAlert"))
+    lists = list(_nodes(page, "VList"))
+    assert len(lists) == 5
+    for record_list in lists:
+        assert 1 <= len(list(_nodes([record_list], "VListItem"))) <= 5
+    titles = _component_text(page, "VListItemTitle")
+    assert len(titles) == 20
+    assert set(titles) == {
+        *(f"Complete.Torrent.Name.{index}" for index in range(12)),
+        *(f"Deleted.Torrent.Name.{index}" for index in range(8)),
+    }
+    panels = list(_nodes(page, "VExpansionPanels"))
+    assert panels
+    assert all(not panel.get("props", {}).get("multiple") for panel in panels)

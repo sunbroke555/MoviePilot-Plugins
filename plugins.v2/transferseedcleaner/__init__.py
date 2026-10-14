@@ -1,9 +1,9 @@
 """Remove V2 downloader tasks only after their files have been safely organized."""
 
-import math
 import threading
 import time
 from datetime import datetime
+from pathlib import PurePosixPath
 from typing import Any, Dict, List, Tuple
 
 from apscheduler.triggers.interval import IntervalTrigger
@@ -26,7 +26,7 @@ class TransferSeedCleaner(_PluginBase):
     plugin_name = "整理后清理做种"
     plugin_desc = "确认整种已安全入库后，删除下载器任务和下载文件。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
-    plugin_version = "1.1.1"
+    plugin_version = "1.2.0"
     plugin_author = "sunbroke555"
     author_url = "https://github.com/sunbroke555"
     plugin_config_prefix = "transferseedcleaner_"
@@ -36,12 +36,11 @@ class TransferSeedCleaner(_PluginBase):
     _enabled = False
     _dry_run = True
     _interval_minutes = 10
-    _wait_minutes = 10
     _downloaders = frozenset()
-    _waiting_reason = "已收到整理成功记录，等待定时复核"
+    _waiting_reason = "待检查"
     _waiting_reasons = frozenset({
         _waiting_reason, "等待整理流程结束", "等待最后一次整理后缓冲时间",
-        "等待整理后缓冲时间",
+        "等待整理后缓冲时间", "已收到整理成功记录，等待定时复核",
     })
 
     def init_plugin(self, config: dict = None):
@@ -50,7 +49,6 @@ class TransferSeedCleaner(_PluginBase):
         self._enabled = bool(config.get("enabled", False))
         self._dry_run = bool(config.get("dry_run", True))
         self._interval_minutes = self._bounded_int(config.get("interval_minutes"), 10, 1, 1440)
-        self._wait_minutes = self._bounded_int(config.get("wait_minutes"), 10, 1, 10080)
         selected = config.get("downloaders") or []
         if isinstance(selected, str):
             selected = [selected]
@@ -145,17 +143,9 @@ class TransferSeedCleaner(_PluginBase):
                         "content": [
                             {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
                                 {"component": "VTextField", "props": {
-                                    "model": "interval_minutes", "label": "复核周期（分钟）",
+                                    "model": "interval_minutes", "label": "自动清理间隔（分钟）",
                                     "type": "number", "min": 1, "max": 1440,
                                     "hint": "每隔多久检查一次待处理种子；满足条件时执行清理。",
-                                    "persistent-hint": True,
-                                }},
-                            ]},
-                            {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
-                                {"component": "VTextField", "props": {
-                                    "model": "wait_minutes", "label": "整理后缓冲时间（分钟）",
-                                    "type": "number", "min": 1, "max": 10080,
-                                    "hint": "同一种子每成功整理一个文件都会重新计时；时间满后，在下一轮复核中检查是否可清理。",
                                     "persistent-hint": True,
                                 }},
                             ]},
@@ -172,77 +162,117 @@ class TransferSeedCleaner(_PluginBase):
             "dry_run": True,
             "downloaders": [],
             "interval_minutes": 10,
-            "wait_minutes": 10,
         }
 
     def get_page(self) -> List[dict]:
-        """Show queued work and recent cleanup decisions."""
-        pending = self._load_pending()
-        history = self.get_data("history") or []
+        """Show five neutral title/subtitle rows at a time, with history folded away."""
+        pending = sorted(self._load_pending(), key=lambda item: float(item["last_event"]), reverse=True)
+        history = list(reversed((self.get_data("history") or [])[-100:]))
         target_names = "、".join(sorted(self._downloaders)) or "未选择"
-        page = [{
-            "component": "VAlert",
-            "props": {
-                "type": "info",
-                "variant": "tonal",
-                "text": (f"待复核：{len(pending)} 个种子；"
-                         f"模式：{'预览' if self._dry_run else '实际删除'}；"
-                         f"允许清理的下载器：{target_names}；"
-                         f"每 {self._interval_minutes} 分钟复核，整理后缓冲 {self._wait_minutes} 分钟。"
-                         "等待信息在打开或刷新页面时更新。"),
-            },
+        for item in pending:
+            self._refresh_pending_metadata(item)
+        for item in history:
+            item["name"] = item.get("name") or self._history_name(item)
+            if "organized_names" not in item:
+                item["organized_names"] = self._history_organized_names(item) or []
+        return [{
+            "component": "div",
+            "props": {"class": "text-body-2 text-medium-emphasis mb-3"},
+            "text": (f"{'已启用' if self._enabled else '已停用'} · "
+                     f"{'预览模式' if self._dry_run else '自动清理'} · "
+                     f"每 {self._interval_minutes} 分钟检查 · 下载器：{target_names}"),
+        }, {
+            "component": "VExpansionPanels",
+            "props": {"modelValue": 0, "multiple": False, "variant": "accordion"},
+            "content": [
+                self._record_section("待处理", pending),
+                self._record_section("清理记录", history, deleted=True),
+            ],
         }]
-        for item in pending[-20:]:
-            self._refresh_pending_name(item)
-            last_event = float(item["last_event"])
-            ready_at = last_event + self._wait_minutes * 60
-            page.append({
-                "component": "VAlert",
-                "props": {
-                    "type": "warning",
-                    "variant": "tonal",
-                    "title": item.get("name") or "名称暂不可用",
-                    "style": "white-space: pre-line; overflow-wrap: anywhere;",
-                    "text": (f"下载器：{item['downloader']}\n"
-                             f"状态：{self._pending_status(item)}\n"
-                             f"最后整理成功：{self._format_time(last_event)}\n"
-                             f"最早可复核：{self._format_time(ready_at)}（仍需通过全部清理检查）\n"
-                             f"Hash：{item['hash']}"),
-                },
+
+    def _record_section(self, title: str, items: List[dict], deleted: bool = False) -> dict:
+        pages = []
+        for offset in range(0, len(items), 5):
+            rows = []
+            for item in items[offset:offset + 5]:
+                if rows:
+                    rows.append({"component": "div", "props": {
+                        "role": "separator", "style": "border-top: 1px solid rgba(var(--v-theme-on-surface), 0.12);",
+                    }})
+                rows.append(self._record_row(item, deleted))
+            pages.append({
+                "component": "VExpansionPanel",
+                "content": [{
+                    "component": "VExpansionPanelTitle",
+                    "text": f"第 {offset // 5 + 1} 组 · {offset + 1}–{min(offset + 5, len(items))} / {len(items)} 条",
+                }, {
+                    "component": "VExpansionPanelText",
+                    "content": [{"component": "VList", "props": {"density": "compact"}, "content": rows}],
+                }],
             })
-        for item in reversed(history[-20:]):
-            name = item.get("name") or self._history_name(item)
-            page.append({
-                "component": "VAlert",
-                "props": {
-                    "type": "success" if item.get("action") == "deleted" else "info",
-                    "variant": "tonal",
-                    "title": name or "名称暂不可用",
-                    "style": "white-space: pre-line; overflow-wrap: anywhere;",
-                    "text": (f"下载器：{item.get('downloader')}\n"
-                             f"{item.get('time')}：{item.get('message')}\n"
-                             f"Hash：{item.get('hash')}"),
-                },
-            })
-        return page
+        if not pages:
+            content = [{"component": "div", "props": {"class": "text-body-2 text-medium-emphasis py-2"},
+                        "text": "暂无清理记录" if deleted else "暂无待处理种子"}]
+        elif len(pages) == 1:
+            content = pages[0]["content"][1]["content"]
+        else:
+            content = [{
+                "component": "VExpansionPanels",
+                "props": {"modelValue": 0, "multiple": False, "variant": "accordion"},
+                "content": pages,
+            }]
+        return {
+            "component": "VExpansionPanel",
+            "content": [{"component": "VExpansionPanelTitle", "text": f"{title} · {len(items)}"},
+                        {"component": "VExpansionPanelText", "content": content}],
+        }
+
+    def _record_row(self, item: dict, deleted: bool) -> dict:
+        wrap = "white-space: normal; overflow-wrap: anywhere; overflow: visible; text-overflow: clip; -webkit-line-clamp: unset;"
+        names = item.get("organized_names") or []
+        subtitle = (names[0] + (f" · 共 {len(names)} 个已整理文件" if len(names) > 1 else "")) if names else "暂无成功整理名称"
+        status = "已清理" if deleted else self._pending_status(item)
+        timestamp = item.get("time") if deleted else self._format_time(float(item["last_event"]))
+        content = [{
+            "component": "VListItemTitle", "props": {"class": "text-body-1 font-weight-medium", "style": wrap},
+            "text": item.get("name") or "名称暂不可用",
+        }, {
+            "component": "VListItemSubtitle", "props": {"class": "mt-1", "style": wrap},
+            "text": f"整理后：{subtitle}",
+        }, {
+            "component": "div", "props": {"class": "text-caption text-medium-emphasis mt-2", "style": wrap},
+            "text": f"{status} · {item['downloader']} · {timestamp}",
+        }]
+        if not deleted and status in ("未整理完成", "已跳过"):
+            content.append({"component": "div", "props": {"class": "text-caption text-medium-emphasis", "style": wrap},
+                            "text": item.get("reason") or "等待检查结果"})
+        details = [{"component": "summary", "text": "查看详情"},
+                   {"component": "div", "props": {"style": wrap}, "text": f"Hash：{item['hash']}"}]
+        if deleted:
+            details.append({"component": "div", "text": item.get("message") or "已删除下载器任务及下载文件"})
+        if len(names) > 1:
+            details.extend({"component": "div", "props": {"style": wrap}, "text": name} for name in names)
+        content.append({"component": "details", "props": {"class": "text-caption text-medium-emphasis mt-1"}, "content": details})
+        return {"component": "VListItem", "props": {"class": "px-0 py-3"}, "content": content}
 
     @staticmethod
     def _format_time(timestamp: float) -> str:
         return datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
 
     def _pending_status(self, item: dict) -> str:
-        """Render the grace period at page-read time, including legacy queues."""
+        """Translate current and legacy decisions into short user-facing states."""
         if not self._enabled:
-            return "插件已停用，保留待处理任务"
+            return "已暂停"
         if item["downloader"] not in self._downloaders:
-            return "该下载器未选中，保留任务"
-        remaining = float(item["last_event"]) + self._wait_minutes * 60 - time.time()
-        if remaining > 0:
-            return f"整理后等待中，剩余约 {math.ceil(remaining / 60)} 分钟"
+            return "下载器未选中"
         reason = item.get("reason")
-        if not reason or reason in self._waiting_reasons:
-            return "等待时间已满，待下一轮复核"
-        return reason
+        if not reason or reason in self._waiting_reasons or reason == "该下载器未选中，保留任务":
+            return "待检查"
+        if reason == "预览：符合删除条件":
+            return "可清理（预览）"
+        if reason in ("仍有文件没有整理记录", "最新整理记录失败"):
+            return "未整理完成"
+        return "已跳过"
 
     @staticmethod
     def _history_name(item: dict) -> str:
@@ -256,25 +286,62 @@ class TransferSeedCleaner(_PluginBase):
             logger.debug(f"整理后清理做种：暂时无法读取种子名称：{error}")
         return ""
 
-    def _refresh_pending_name(self, item: dict, torrents: List[Any] = None):
-        """Merge names into existing work without resetting its wait timer."""
+    @staticmethod
+    def _history_organized_names(item: dict):
+        """Use the latest successful destination per source as display metadata."""
+        try:
+            histories = TransferHistoryOper().list_by_hash(item["hash"]) or []
+            latest = {}
+            for history in histories:
+                if getattr(history, "downloader", None) != item["downloader"]:
+                    continue
+                recorded_hash = getattr(history, "download_hash", None)
+                if recorded_hash and str(recorded_hash).lower() != item["hash"].lower():
+                    continue
+                source = getattr(history, "src", None)
+                if not source:
+                    continue
+                previous = latest.get(source)
+                if previous is None or int(getattr(history, "id", 0) or 0) > int(getattr(previous, "id", 0) or 0):
+                    latest[source] = history
+            extensions = {str(ext).lower() for ext in settings.RMT_MEDIAEXT}
+            destinations = set()
+            for history in latest.values():
+                destination = getattr(history, "dest", None)
+                if getattr(history, "status", False) and isinstance(destination, str) and destination:
+                    path = PurePosixPath(destination.replace("\\", "/"))
+                    if path.suffix.lower() in extensions:
+                        destinations.add(str(path))
+            return [PurePosixPath(path).name for path in sorted(destinations)]
+        except Exception as error:
+            logger.debug(f"整理后清理做种：暂时无法读取整理后名称：{error}")
+            return None
+
+    def _refresh_pending_metadata(self, item: dict, torrents: List[Any] = None):
+        """Merge display names without changing the event generation used for deletion."""
         torrent = self._matching_torrent(torrents, item) if torrents is not None else None
         # DownloaderTorrent.title is the original release name; .name is parsed media metadata.
         title = getattr(torrent, "title", None)
         name = title.strip() if isinstance(title, str) else ""
         name = name or item.get("name") or self._history_name(item)
-        if not name:
-            return
+        organized_names = self._history_organized_names(item)
+        updates = {}
+        if name:
+            updates["name"] = name
+        if organized_names is not None:
+            updates["organized_names"] = organized_names
         with self._pending_lock:
             pending = self._load_pending()
             for current in pending:
                 if (current["downloader"] == item["downloader"]
                         and current["hash"].lower() == item["hash"].lower()):
-                    if current.get("name") != name:
-                        current["name"] = name
+                    if current.get("last_event") != item.get("last_event"):
+                        return
+                    if any(current.get(key) != value for key, value in updates.items()):
+                        current.update(updates)
                         self.save_data("pending", pending)
                     break
-            item["name"] = name
+            item.update(updates)
 
     @staticmethod
     def _task_label(item: dict) -> str:
@@ -313,7 +380,9 @@ class TransferSeedCleaner(_PluginBase):
         download_hash = str(data.get("download_hash") or "").strip()
         if not downloader or downloader not in self._downloaders or not download_hash:
             return
-        name = self._history_name({"downloader": downloader, "hash": download_hash})
+        identity = {"downloader": downloader, "hash": download_hash}
+        name = self._history_name(identity)
+        organized_names = self._history_organized_names(identity)
         with self._pending_lock:
             pending = self._load_pending()
             current = next((item for item in pending if item["downloader"] == downloader
@@ -323,11 +392,14 @@ class TransferSeedCleaner(_PluginBase):
                 current["reason"] = self._waiting_reason
                 if name and not current.get("name"):
                     current["name"] = name
+                if organized_names is not None:
+                    current["organized_names"] = organized_names
             else:
                 pending.append({
                     "downloader": downloader,
                     "hash": download_hash,
                     "name": name,
+                    "organized_names": organized_names or [],
                     "last_event": time.time(),
                     "reason": self._waiting_reason,
                 })
@@ -362,6 +434,7 @@ class TransferSeedCleaner(_PluginBase):
                 "downloader": item["downloader"],
                 "hash": item["hash"],
                 "name": item.get("name") or "",
+                "organized_names": list(item.get("organized_names") or []),
                 "action": "deleted",
                 "message": "已删除下载器任务及下载文件",
             })
@@ -471,12 +544,9 @@ class TransferSeedCleaner(_PluginBase):
             download_oper = DownloadHistoryOper()
             transfer_oper = TransferHistoryOper()
             for item in selected_pending:
-                self._refresh_pending_name(item, all_torrents)
+                self._refresh_pending_metadata(item, all_torrents)
                 if service_types.get(item["downloader"]) not in ("qbittorrent", "transmission"):
                     self._set_reason(item, "仅支持 qBittorrent 和 Transmission 下载任务")
-                    continue
-                if time.time() - float(item.get("last_event") or 0) < self._wait_minutes * 60:
-                    self._set_reason(item, "等待整理后缓冲时间")
                     continue
                 try:
                     result = self._inspect_pending(item, all_torrents, download_oper, transfer_oper)
@@ -511,8 +581,6 @@ class TransferSeedCleaner(_PluginBase):
                             continue
                         if item["downloader"] not in self._downloaders:
                             self._set_reason(item, "该下载器未选中，保留任务")
-                            continue
-                        if time.time() - float(current.get("last_event") or 0) < self._wait_minutes * 60:
                             continue
                         if self.chain.remove_torrents(
                             hashs=item["hash"], delete_file=True, downloader=item["downloader"]
