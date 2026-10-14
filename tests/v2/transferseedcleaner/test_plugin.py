@@ -214,6 +214,82 @@ def test_preview_marks_ready_candidate_without_deleting(runtime):
     assert plugin.get_data("pending")[0]["reason"] == "预览：符合删除条件"
 
 
+def test_missing_target_setting_is_off_by_default_and_requires_true(runtime):
+    plugin, _, _ = runtime
+    form, defaults = plugin.get_form()
+    switches = [node["props"] for node in _nodes(form, "VSwitch")]
+    assert defaults["allow_missing_targets"] is False
+    assert plugin._allow_missing_targets is False
+    setting = next(node for node in switches if node["model"] == "allow_missing_targets")
+    assert setting["label"] == "允许整理目标缺失时清理"
+    assert "已丢失" in setting["hint"]
+    plugin.init_plugin({"allow_missing_targets": "false"})
+    assert plugin._allow_missing_targets is False
+
+
+@pytest.mark.parametrize("allow_missing", [False, True])
+@pytest.mark.parametrize("preview", [False, True])
+def test_missing_target_option_controls_cleanup_and_is_recorded(runtime, plugin_module, allow_missing, preview):
+    plugin, chain, event = runtime
+    destination = Path(plugin_module.TransferHistoryOper().list_by_hash.return_value[0].dest)
+    destination.rename(destination.with_name("MovedShow.mkv"))
+    plugin.init_plugin({
+        "enabled": True, "dry_run": preview, "downloaders": ["qb"],
+        "allow_missing_targets": allow_missing,
+    })
+    plugin.on_transfer_complete(event)
+
+    result = plugin.run_now()
+
+    if allow_missing and not preview:
+        chain.remove_torrents.assert_called_once_with(hashs="abc123", delete_file=True, downloader="qb")
+        assert result["deleted"] == 1
+        record = plugin.get_data("history")[-1]
+        assert record["ignored_missing_targets"] == [str(destination)]
+        assert "忽略 1 个缺失整理目标" in record["message"]
+        assert str(destination) in _page_text(plugin.get_page())
+    else:
+        chain.remove_torrents.assert_not_called()
+        reason = plugin.get_data("pending")[0]["reason"]
+        if allow_missing:
+            assert result["ready"] == 1
+            assert "已按设置忽略整理目标缺失" in reason
+            assert "可清理（预览）" in _page_text(plugin.get_page())
+            assert str(destination) in _page_text(plugin.get_page())
+        else:
+            assert result["ready"] == 0
+            assert "整理目标缺失" in reason
+        assert result["deleted"] == 0
+
+
+def test_missing_target_option_is_rechecked_immediately_before_deletion(runtime, plugin_module, monkeypatch):
+    plugin, chain, event = runtime
+    Path(plugin_module.TransferHistoryOper().list_by_hash.return_value[0].dest).unlink()
+    plugin.init_plugin({
+        "enabled": True, "dry_run": False, "downloaders": ["qb"], "allow_missing_targets": True,
+    })
+    plugin.on_transfer_complete(event)
+    original = plugin._inspect_pending
+    calls = 0
+
+    def disable_after_final_inspection(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            assert result.ready and result.missing_targets
+            plugin.init_plugin({"enabled": True, "dry_run": False, "downloaders": ["qb"]})
+        return result
+
+    monkeypatch.setattr(plugin, "_inspect_pending", disable_after_final_inspection)
+    result = plugin.run_now()
+
+    assert calls == 2
+    assert result["deleted"] == 0
+    assert "清理已关闭" in plugin.get_data("pending")[0]["reason"]
+    chain.remove_torrents.assert_not_called()
+
+
 def test_ready_candidate_removes_exact_task_and_data_once(runtime):
     plugin, chain, event = runtime
     plugin.on_transfer_complete(event)

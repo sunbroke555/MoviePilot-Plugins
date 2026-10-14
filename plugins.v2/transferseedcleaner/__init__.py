@@ -28,7 +28,7 @@ class TransferSeedCleaner(_PluginBase):
     plugin_name = "整理后清理做种"
     plugin_desc = "确认整种已安全入库后，删除下载器任务和下载文件。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
-    plugin_version = "1.3.1"
+    plugin_version = "1.3.2"
     plugin_author = "sunbroke555"
     author_url = "https://github.com/sunbroke555"
     plugin_config_prefix = "transferseedcleaner_"
@@ -37,6 +37,7 @@ class TransferSeedCleaner(_PluginBase):
 
     _enabled = False
     _dry_run = True
+    _allow_missing_targets = False
     _interval_minutes = 10
     _downloaders = frozenset()
     _waiting_reason = "待检查"
@@ -50,6 +51,7 @@ class TransferSeedCleaner(_PluginBase):
         config = config or {}
         self._enabled = bool(config.get("enabled", False))
         self._dry_run = bool(config.get("dry_run", True))
+        self._allow_missing_targets = config.get("allow_missing_targets") is True
         self._interval_minutes = self._bounded_int(config.get("interval_minutes"), 10, 1, 1440)
         selected = config.get("downloaders") or []
         if isinstance(selected, str):
@@ -154,6 +156,18 @@ class TransferSeedCleaner(_PluginBase):
                     {
                         "component": "VRow",
                         "content": [
+                            {"component": "VCol", "props": {"cols": 12}, "content": [
+                                {"component": "VSwitch", "props": {
+                                    "model": "allow_missing_targets", "label": "允许整理目标缺失时清理",
+                                    "hint": "默认关闭。确认整理后的文件已搬走时可开启；若文件实际已丢失，也会按成功整理记录清理下载数据。",
+                                    "persistent-hint": True,
+                                }},
+                            ]},
+                        ],
+                    },
+                    {
+                        "component": "VRow",
+                        "content": [
                             {"component": "VCol", "props": {"cols": 12, "md": 6}, "content": [
                                 {"component": "VTextField", "props": {
                                     "model": "interval_minutes", "label": "自动清理间隔（分钟）",
@@ -173,6 +187,7 @@ class TransferSeedCleaner(_PluginBase):
         ], {
             "enabled": False,
             "dry_run": True,
+            "allow_missing_targets": False,
             "downloaders": [],
             "interval_minutes": 10,
         }
@@ -278,6 +293,10 @@ class TransferSeedCleaner(_PluginBase):
                    {"component": "div", "props": {"style": wrap}, "text": f"Hash：{item['hash']}"}]
         if deleted:
             details.append({"component": "div", "text": item.get("message") or "已删除下载器任务及下载文件"})
+            details.extend({"component": "div", "props": {"style": wrap}, "text": f"已忽略缺失目标：{path}"}
+                           for path in item.get("ignored_missing_targets") or [])
+        elif status == "可清理（预览）" and item.get("reason") != "预览：符合删除条件":
+            details.append({"component": "div", "props": {"style": wrap}, "text": item["reason"]})
         if len(names) > 1:
             details.extend({"component": "div", "props": {"style": wrap}, "text": name} for name in names)
         content.append({"component": "details", "props": {"class": "text-caption text-medium-emphasis mt-1"}, "content": details})
@@ -296,7 +315,7 @@ class TransferSeedCleaner(_PluginBase):
         reason = item.get("reason")
         if not reason or reason in self._waiting_reasons or reason == "该下载器未选中，保留任务":
             return "待检查"
-        if reason == "预览：符合删除条件":
+        if reason.startswith("预览：符合删除条件"):
             return "可清理（预览）"
         if reason in ("仍有文件没有整理记录", "最新整理记录失败"):
             return "未整理完成"
@@ -447,7 +466,7 @@ class TransferSeedCleaner(_PluginBase):
                         logger.info(f"整理后清理做种 {self._task_label(current)}：{reason}")
                     return
 
-    def _record_deleted(self, item: dict):
+    def _record_deleted(self, item: dict, missing_targets=()):
         """Remove finished work and retain a short audit trail."""
         with self._pending_lock:
             pending = [
@@ -464,7 +483,10 @@ class TransferSeedCleaner(_PluginBase):
                 "name": item.get("name") or "",
                 "organized_names": list(item.get("organized_names") or []),
                 "action": "deleted",
-                "message": "已删除下载器任务及下载文件",
+                "message": "已删除下载器任务及下载文件" + (
+                    f"；按设置忽略 {len(missing_targets)} 个缺失整理目标" if missing_targets else ""
+                ),
+                "ignored_missing_targets": list(missing_targets),
             })
             self.save_data("history", history[-100:])
 
@@ -548,6 +570,7 @@ class TransferSeedCleaner(_PluginBase):
             transfer_histories=transfer_oper.list_by_hash(item["hash"]),
             media_extensions=settings.RMT_MEDIAEXT,
             torrent_file_lookup=self.chain.torrent_files,
+            allow_missing_targets=self._allow_missing_targets,
         )
 
     def scan_pending(self) -> dict:
@@ -596,7 +619,9 @@ class TransferSeedCleaner(_PluginBase):
                         continue
                     if preview or self._dry_run:
                         result["ready"] += 1
-                        self._set_reason(item, "预览：符合删除条件")
+                        self._set_reason(item, "预览：符合删除条件" + (
+                            f"；{inspection.reason}" if inspection.missing_targets else ""
+                        ))
                         continue
                     # Recheck live tasks and files immediately before the destructive call.
                     # Another torrent may have started using this data during the scan.
@@ -630,15 +655,22 @@ class TransferSeedCleaner(_PluginBase):
                             break
                         if preview or self._dry_run:
                             result["ready"] += 1
-                            self._set_reason(item, "预览：符合删除条件")
+                            self._set_reason(item, "预览：符合删除条件" + (
+                                f"；{fresh_result.reason}" if fresh_result.missing_targets else ""
+                            ))
+                            continue
+                        if fresh_result.missing_targets and not self._allow_missing_targets:
+                            self._set_reason(item, "允许整理目标缺失时清理已关闭，保留任务")
                             continue
                         if self.chain.remove_torrents(
                             hashs=item["hash"], delete_file=True, downloader=item["downloader"]
                         ):
                             result["deleted"] += 1
                             result["retained"] -= 1
-                            self._record_deleted(item)
-                            logger.info(f"整理后清理做种：已删除 {self._task_label(item)} 及下载文件")
+                            self._record_deleted(item, missing_targets=fresh_result.missing_targets)
+                            logger.info(f"整理后清理做种：已删除 {self._task_label(item)} 及下载文件" + (
+                                f"；{fresh_result.reason}" if fresh_result.missing_targets else ""
+                            ))
                         else:
                             self._set_reason(item, "下载器删除失败，等待下次重试")
                 except Exception as error:

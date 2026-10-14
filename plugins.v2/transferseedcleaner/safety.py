@@ -1,9 +1,10 @@
 """File-level checks before removing a MoviePilot V2 download task and its data."""
 
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Tuple
 
 
 @dataclass(frozen=True)
@@ -12,6 +13,7 @@ class CheckResult:
 
     ready: bool
     reason: str
+    missing_targets: Tuple[str, ...] = ()
 
 
 def _value(item: Any, name: str, default: Any = None) -> Any:
@@ -90,8 +92,9 @@ def inspect_candidate(
     transfer_histories: Iterable[Any],
     media_extensions: Iterable[str],
     torrent_file_lookup: Optional[Callable[..., Any]] = None,
+    allow_missing_targets: bool = False,
 ) -> CheckResult:
-    """Require complete, independently stored output for every registered file.
+    """Validate every transfer, allowing absent targets only with explicit opt-in.
 
     MoviePilot sends ``TransferComplete`` once per video, so an event or the
     torrent's "已整理" tag alone cannot establish that a multi-file torrent is safe.
@@ -237,6 +240,7 @@ def inspect_candidate(
         return CheckResult(False, "种子媒体文件与 MoviePilot 下载记录数量不一致")
 
     histories = list(transfer_histories or [])
+    missing_targets = []
     for file in registered:
         source = _path(_value(file, "fullpath"))
         if not source or not os.path.isfile(source):
@@ -256,8 +260,21 @@ def inspect_candidate(
         if _value(latest, "mode") not in ("copy", "link"):
             return CheckResult(False, "整理模式不是复制或硬链接")
         destination = _path(_value(latest, "dest"))
-        if not destination or os.path.islink(destination) or not os.path.isfile(destination):
-            return CheckResult(False, "整理目标缺失、不可访问或为软链接")
+        if not destination:
+            return CheckResult(False, "整理目标路径无效")
+        try:
+            destination_stat = os.lstat(destination)
+        except FileNotFoundError:
+            if not allow_missing_targets:
+                return CheckResult(False, f"整理目标缺失：{destination}")
+            destination_stat = None
+        except OSError:
+            return CheckResult(False, f"整理目标不可访问：{destination}")
+        if destination_stat is not None:
+            if stat.S_ISLNK(destination_stat.st_mode):
+                return CheckResult(False, f"整理目标为软链接：{destination}")
+            if not stat.S_ISREG(destination_stat.st_mode):
+                return CheckResult(False, f"整理目标不是普通文件：{destination}")
         if (_overlaps(content_path, destination)
                 or _overlaps(os.path.realpath(content_path), os.path.realpath(destination))
                 or os.path.realpath(source) == os.path.realpath(destination)):
@@ -265,14 +282,26 @@ def inspect_candidate(
         try:
             # A bind mount can alias a download directory without changing realpath.
             for parent in Path(destination).parents:
-                parent_stat = os.stat(parent)
+                try:
+                    parent_stat = os.stat(parent)
+                except FileNotFoundError:
+                    if destination_stat is None:
+                        continue
+                    raise
                 if (parent_stat.st_dev, parent_stat.st_ino) in content_directory_ids:
                     return CheckResult(False, "整理目标仍依赖下载数据")
+            source_size = os.path.getsize(source)
+            if source_size <= 0:
+                return CheckResult(False, "下载源文件为空")
+            if destination_stat is None:
+                # Explicit opt-in: successful history is required, but the moved
+                # library copy cannot be verified at its former location.
+                missing_targets.append(destination)
+                continue
             if _value(latest, "mode") == "copy" and os.path.samefile(source, destination):
                 return CheckResult(False, "复制目标与下载源仍为同一文件")
-            source_size = os.path.getsize(source)
             destination_size = os.path.getsize(destination)
-            if source_size <= 0 or source_size != destination_size:
+            if source_size != destination_size:
                 return CheckResult(False, "整理目标与源文件大小不一致")
             if _value(latest, "mode") == "link":
                 if not os.path.samefile(source, destination):
@@ -281,4 +310,6 @@ def inspect_candidate(
                     return CheckResult(False, "硬链接整理目标缺少独立目录项")
         except OSError:
             return CheckResult(False, "无法核对整理目标与源文件")
+    if missing_targets:
+        return CheckResult(True, "已按设置忽略整理目标缺失：" + "；".join(missing_targets), tuple(missing_targets))
     return CheckResult(True, "所有已下载媒体文件均已安全整理")

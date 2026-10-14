@@ -145,6 +145,118 @@ def test_missing_library_target_blocks_cleanup(tmp_path):
     assert "整理目标缺失" in result.reason
 
 
+@pytest.mark.parametrize("mode", ["copy", "link"])
+def test_moved_library_directory_is_allowed_only_with_explicit_setting(tmp_path, mode):
+    arguments = _candidate(tmp_path, names=("Season 1/E01.mkv", "Season 1/E02.mkv"))
+    for history in arguments["transfer_histories"]:
+        history["mode"] = mode
+        if mode == "link":
+            Path(history["dest"]).unlink()
+            os.link(history["src"], history["dest"])
+    (tmp_path / "library" / "Season 1").rename(tmp_path / "moved-season")
+
+    assert not _inspect(arguments).ready
+    arguments["allow_missing_targets"] = True
+    result = _inspect(arguments)
+
+    assert result.ready, result.reason
+    assert result.missing_targets == tuple(history["dest"] for history in arguments["transfer_histories"])
+    assert "已按设置忽略整理目标缺失" in result.reason
+
+
+@pytest.mark.parametrize("failure", ["no_history", "failed", "symlink_mode"])
+def test_missing_target_override_still_requires_all_successful_transfer_records(tmp_path, failure):
+    arguments = _candidate(tmp_path, names=("Season 1/E01.mkv", "Season 1/E02.mkv"))
+    arguments["allow_missing_targets"] = True
+    for history in arguments["transfer_histories"]:
+        Path(history["dest"]).unlink()
+    if failure == "no_history":
+        arguments["transfer_histories"].pop()
+    elif failure == "failed":
+        arguments["transfer_histories"][-1]["status"] = False
+    else:
+        arguments["transfer_histories"][-1]["mode"] = "softlink"
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+    assert any(reason in result.reason for reason in ("没有整理记录", "失败", "不是复制或硬链接"))
+
+
+def test_missing_target_override_does_not_allow_permission_errors(tmp_path, monkeypatch):
+    arguments = _candidate(tmp_path)
+    arguments["allow_missing_targets"] = True
+    destination = arguments["transfer_histories"][0]["dest"]
+    original_lstat = os.lstat
+
+    def deny_destination(path, *args, **kwargs):
+        if os.fspath(path) == destination:
+            raise PermissionError("denied")
+        return original_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(safety.os, "lstat", deny_destination)
+    result = _inspect(arguments)
+
+    assert not result.ready
+    assert "整理目标不可访问" in result.reason
+    assert destination in result.reason
+
+
+@pytest.mark.parametrize("kind", ["directory", "symlink", "broken_symlink", "wrong_size"])
+def test_missing_target_override_still_validates_existing_targets(tmp_path, kind):
+    arguments = _candidate(tmp_path)
+    arguments["allow_missing_targets"] = True
+    history = arguments["transfer_histories"][0]
+    destination = Path(history["dest"])
+    destination.unlink()
+    if kind == "directory":
+        destination.mkdir()
+    elif kind == "symlink":
+        destination.symlink_to(history["src"])
+    elif kind == "broken_symlink":
+        destination.symlink_to(tmp_path / "absent-video.mkv")
+    else:
+        destination.write_bytes(b"x")
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+    assert any(reason in result.reason for reason in ("普通文件", "软链接", "大小不一致"))
+
+
+@pytest.mark.parametrize("failure", ["invalid_target", "target_inside_downloads", "empty_source", "missing_source"])
+def test_missing_target_override_keeps_path_and_source_protections(tmp_path, failure):
+    arguments = _candidate(tmp_path)
+    arguments["allow_missing_targets"] = True
+    history = arguments["transfer_histories"][0]
+    Path(history["dest"]).unlink()
+    if failure == "invalid_target":
+        history["dest"] = "relative/path.mkv"
+    elif failure == "target_inside_downloads":
+        history["dest"] = str(Path(history["src"]).with_name("absent-copy.mkv"))
+    elif failure == "empty_source":
+        Path(history["src"]).write_bytes(b"")
+    else:
+        Path(history["src"]).unlink()
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+def test_missing_target_override_does_not_allow_shared_download_files(tmp_path):
+    arguments = _candidate(tmp_path)
+    arguments["allow_missing_targets"] = True
+    Path(arguments["transfer_histories"][0]["dest"]).unlink()
+    arguments["all_torrents"].append({**arguments["torrent"], "hash": "OTHER", "title": "Shared torrent"})
+    arguments["torrent_file_lookup"] = Mock(return_value=arguments["torrent_files"])
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+    assert "共用下载数据" in result.reason
+
+
 @pytest.mark.parametrize("progress", [99.9, 0, "unknown"])
 def test_unfinished_or_unknown_download_progress_blocks_cleanup(tmp_path, progress):
     arguments = _candidate(tmp_path)
