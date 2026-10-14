@@ -2,8 +2,11 @@
 
 import copy
 import importlib.util
+import inspect
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -64,6 +67,7 @@ def plugin_module(monkeypatch):
     module("apscheduler", package=True)
     module("apscheduler.triggers", package=True)
     module("apscheduler.triggers.interval", IntervalTrigger=IntervalTrigger)
+    module("fastapi", Depends=lambda dependency: SimpleNamespace(dependency=dependency))
     module("app", package=True)
     module("app.core", package=True)
     module("app.core.event", Event=Event, eventmanager=EventManager())
@@ -71,6 +75,7 @@ def plugin_module(monkeypatch):
     module("app.db", package=True)
     module("app.db.downloadhistory_oper", DownloadHistoryOper=object)
     module("app.db.transferhistory_oper", TransferHistoryOper=object)
+    module("app.db.user_oper", get_current_active_superuser=lambda: None)
     module("app.helper", package=True)
     module("app.helper.downloader", DownloaderHelper=DownloaderHelper)
     module("app.log", logger=MagicMock())
@@ -679,7 +684,7 @@ def test_successful_empty_name_lookup_clears_stale_cache_but_exception_preserves
     assert "暂无成功整理名称" in _page_text(page)
 
 
-def test_record_pages_are_neutral_and_limit_each_list_to_five_entries(runtime):
+def test_record_page_shows_every_row_in_direct_neutral_lists_without_groups(runtime):
     plugin, _, _ = runtime
     plugin.save_data("pending", [{
         "downloader": "qb", "hash": f"pending-{index}", "name": f"Complete.Torrent.Name.{index}",
@@ -695,15 +700,263 @@ def test_record_pages_are_neutral_and_limit_each_list_to_five_entries(runtime):
 
     assert not list(_nodes(page, "VAlert"))
     lists = list(_nodes(page, "VList"))
-    assert len(lists) == 5
-    for record_list in lists:
-        assert 1 <= len(list(_nodes([record_list], "VListItem"))) <= 5
+    assert len(lists) == 2
+    assert sorted(len(list(_nodes([record_list], "VListItem"))) for record_list in lists) == [8, 12]
     titles = _component_text(page, "VListItemTitle")
     assert len(titles) == 20
     assert set(titles) == {
         *(f"Complete.Torrent.Name.{index}" for index in range(12)),
         *(f"Deleted.Torrent.Name.{index}" for index in range(8)),
     }
-    panels = list(_nodes(page, "VExpansionPanels"))
-    assert panels
-    assert all(not panel.get("props", {}).get("multiple") for panel in panels)
+    assert not any(str(node.get("component", "")).startswith("VExpansionPanel") for node in _nodes(page))
+    assert "第 1 组" not in _page_text(page)
+
+
+def _run_button(plugin):
+    buttons = [node for node in _nodes(plugin.get_page(), "VBtn")
+               if node.get("text", node.get("props", {}).get("text")) == "立即执行"]
+    assert len(buttons) == 1
+    return buttons[0]
+
+
+def test_run_button_calls_only_the_manual_post_endpoint(runtime):
+    plugin, _, event = runtime
+    plugin.on_transfer_complete(event)
+
+    button = _run_button(plugin)
+    click = button["events"]["click"]
+    endpoints = [endpoint for endpoint in plugin.get_api() if endpoint["path"] == "/run_now"]
+
+    assert button.get("props", {}).get("disabled", False) is False
+    assert click["api"] == "plugin/TransferSeedCleaner/run_now"
+    assert click["method"].lower() == "post"
+    assert "apikey" not in str(button).lower()
+    assert len(endpoints) == 1
+    assert [method.upper() for method in endpoints[0]["methods"]] == ["POST"]
+    assert endpoints[0]["endpoint"] == plugin.run_now
+    assert endpoints[0]["auth"] == "bear"
+    assert [dependency.dependency for dependency in endpoints[0]["dependencies"]] == [
+        sys.modules["app.db.user_oper"].get_current_active_superuser
+    ]
+    assert not inspect.signature(plugin.run_now).parameters
+
+
+@pytest.mark.parametrize("unavailable", ["disabled", "no_selection", "empty", "unselected", "busy"])
+def test_manual_button_is_disabled_when_it_cannot_run(runtime, unavailable):
+    plugin, _, event = runtime
+    if unavailable != "empty":
+        plugin.on_transfer_complete(event)
+    if unavailable == "disabled":
+        plugin._enabled = False
+    elif unavailable == "no_selection":
+        plugin._downloaders = frozenset()
+    elif unavailable == "unselected":
+        plugin._downloaders = frozenset({"another-downloader"})
+    elif unavailable == "busy":
+        plugin._scan_lock.acquire()
+
+    try:
+        assert _run_button(plugin)["props"]["disabled"] is True
+    finally:
+        if unavailable == "busy":
+            plugin._scan_lock.release()
+
+
+def test_manual_run_deletes_immediately_and_saves_visible_summary(runtime):
+    plugin, chain, event = runtime
+    plugin._interval_minutes = 1440
+    plugin.on_transfer_complete(event)
+
+    result = plugin.run_now()
+
+    chain.remove_torrents.assert_called_once_with(
+        hashs="abc123", delete_file=True, downloader="qb"
+    )
+    assert result["success"] is True
+    assert result["checked"] == 1
+    assert result["deleted"] == 1
+    assert result["retained"] == 0
+    assert result["message"]
+    last_run = plugin.get_data("last_run")
+    assert last_run["checked"] == 1 and last_run["deleted"] == 1
+    assert last_run["time"]
+    assert last_run["message"] in _page_text(plugin.get_page())
+
+
+def test_manual_run_respects_preview_and_reports_ready_without_deleting(runtime):
+    plugin, chain, event = runtime
+    plugin._dry_run = True
+    plugin.on_transfer_complete(event)
+
+    result = plugin.run_now()
+
+    assert result["success"] is True
+    assert result["checked"] == 1
+    assert result["ready"] == 1
+    assert result["deleted"] == 0
+    assert result["retained"] == 1
+    assert plugin._dry_run is True
+    assert plugin.get_data("pending")[0]["reason"] == "预览：符合删除条件"
+    chain.remove_torrents.assert_not_called()
+
+
+def test_manual_run_retains_unorganized_files(runtime, plugin_module):
+    plugin, chain, event = runtime
+    plugin_module.TransferHistoryOper().list_by_hash.return_value = []
+    plugin.on_transfer_complete(event)
+
+    result = plugin.run_now()
+
+    assert result["success"] is True
+    assert result["checked"] == 1
+    assert result["ready"] == 0
+    assert result["deleted"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    chain.remove_torrents.assert_not_called()
+
+
+@pytest.mark.parametrize("unavailable", ["disabled", "no_selection"])
+def test_manual_run_does_not_bypass_disabled_or_downloader_configuration(runtime, unavailable):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    previous_run = {"time": "2026-10-14 12:00:00", "message": "previous scan"}
+    plugin.save_data("last_run", previous_run.copy())
+    if unavailable == "disabled":
+        plugin._enabled = False
+    else:
+        plugin._downloaders = frozenset()
+
+    result = plugin.run_now()
+
+    assert result["success"] is False
+    assert result["checked"] == 0
+    assert result["deleted"] == 0
+    assert result["message"]
+    assert plugin.get_data("last_run") == previous_run
+    assert len(plugin.get_data("pending")) == 1
+    chain.list_torrents.assert_not_called()
+    chain.remove_torrents.assert_not_called()
+
+
+def test_manual_run_with_no_pending_work_records_empty_summary(runtime):
+    plugin, chain, _ = runtime
+
+    result = plugin.run_now()
+
+    assert result["success"] is True
+    assert all(result[key] == 0 for key in ("checked", "deleted", "ready", "retained"))
+    assert result["message"]
+    assert plugin.get_data("last_run")["time"]
+    assert plugin.get_data("last_run")["message"] == result["message"]
+    chain.list_torrents.assert_not_called()
+    chain.remove_torrents.assert_not_called()
+
+
+def test_manual_run_reports_downloader_failure_and_preserves_pending(runtime, plugin_module):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    plugin_module.DownloaderHelper.downloader.get_torrents.return_value = ([], True)
+
+    result = plugin.run_now()
+
+    assert result["success"] is False
+    assert result["checked"] == 0
+    assert result["deleted"] == 0
+    assert result["retained"] == 1
+    assert result["message"]
+    assert plugin.get_data("last_run")["success"] is False
+    assert plugin.get_data("last_run")["message"] == result["message"]
+    assert len(plugin.get_data("pending")) == 1
+    chain.remove_torrents.assert_not_called()
+
+
+@pytest.mark.parametrize("first,second", [("scan_pending", "run_now"), ("run_now", "scan_pending")])
+def test_manual_and_automatic_scans_share_lock_and_delete_only_once(runtime, monkeypatch, first, second):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    entered_scan = threading.Event()
+    release_scan = threading.Event()
+    original_snapshot = plugin._snapshot_torrents
+
+    def blocked_snapshot():
+        entered_scan.set()
+        assert release_scan.wait(timeout=5), "test did not release running scan"
+        return original_snapshot()
+
+    monkeypatch.setattr(plugin, "_snapshot_torrents", blocked_snapshot)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        running = executor.submit(getattr(plugin, first))
+        try:
+            assert entered_scan.wait(timeout=5), "first scan never reached inventory check"
+            result = getattr(plugin, second)()
+            assert result["success"] is False
+            assert result["checked"] == 0 and result["deleted"] == 0
+            assert result["message"]
+            assert plugin.get_data("last_run") is None
+            chain.remove_torrents.assert_not_called()
+        finally:
+            release_scan.set()
+        assert running.result(timeout=5)["success"] is True
+
+    chain.remove_torrents.assert_called_once_with(
+        hashs="abc123", delete_file=True, downloader="qb"
+    )
+    assert plugin.get_data("pending") == []
+    assert plugin.get_data("last_run")["deleted"] == 1
+
+
+@pytest.mark.parametrize("stage", ["snapshot", "inspection"])
+@pytest.mark.parametrize("change", ["disabled", "preview"])
+def test_manual_run_rechecks_config_after_final_safety_checks(runtime, monkeypatch, stage, change):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    method = "_snapshot_torrents" if stage == "snapshot" else "_inspect_pending"
+    original = getattr(plugin, method)
+    calls = 0
+
+    def reconfigure_after_second_check(*args, **kwargs):
+        nonlocal calls
+        result = original(*args, **kwargs)
+        calls += 1
+        if calls == 2:
+            plugin.init_plugin({
+                "enabled": change != "disabled",
+                "dry_run": change == "preview",
+                "downloaders": ["qb"],
+            })
+        return result
+
+    monkeypatch.setattr(plugin, method, reconfigure_after_second_check)
+
+    result = plugin.run_now()
+
+    assert calls == 2
+    assert result["deleted"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    chain.remove_torrents.assert_not_called()
+
+
+def test_preview_run_cannot_begin_deleting_if_preview_is_disabled_mid_scan(runtime, monkeypatch):
+    plugin, chain, event = runtime
+    plugin._dry_run = True
+    plugin.on_transfer_complete(event)
+    original = plugin._inspect_pending
+
+    def turn_off_preview_after_inspection(*args, **kwargs):
+        result = original(*args, **kwargs)
+        assert result.ready
+        plugin.init_plugin({"enabled": True, "dry_run": False, "downloaders": ["qb"]})
+        return result
+
+    monkeypatch.setattr(plugin, "_inspect_pending", turn_off_preview_after_inspection)
+
+    result = plugin.run_now()
+
+    assert plugin._dry_run is False
+    assert result["ready"] == 1
+    assert result["deleted"] == 0
+    assert result["retained"] == 1
+    assert plugin.get_data("pending")[0]["reason"] == "预览：符合删除条件"
+    chain.remove_torrents.assert_not_called()

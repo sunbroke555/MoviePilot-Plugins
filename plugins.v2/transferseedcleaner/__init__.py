@@ -7,10 +7,12 @@ from pathlib import PurePosixPath
 from typing import Any, Dict, List, Tuple
 
 from apscheduler.triggers.interval import IntervalTrigger
+from fastapi import Depends
 
 from app.core.event import Event, eventmanager
 from app.db.downloadhistory_oper import DownloadHistoryOper
 from app.db.transferhistory_oper import TransferHistoryOper
+from app.db.user_oper import get_current_active_superuser
 from app.helper.downloader import DownloaderHelper
 from app.log import logger
 from app.plugins import _PluginBase
@@ -26,7 +28,7 @@ class TransferSeedCleaner(_PluginBase):
     plugin_name = "整理后清理做种"
     plugin_desc = "确认整种已安全入库后，删除下载器任务和下载文件。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
-    plugin_version = "1.2.0"
+    plugin_version = "1.3.0"
     plugin_author = "sunbroke555"
     author_url = "https://github.com/sunbroke555"
     plugin_config_prefix = "transferseedcleaner_"
@@ -79,8 +81,19 @@ class TransferSeedCleaner(_PluginBase):
         return []
 
     def get_api(self) -> List[Dict[str, Any]]:
-        """This plugin does not expose an HTTP API."""
-        return []
+        """Expose the manual scan through MoviePilot's authenticated API."""
+        return [{
+            "path": "/run_now",
+            "endpoint": self.run_now,
+            "methods": ["POST"],
+            "auth": "bear",
+            "dependencies": [Depends(get_current_active_superuser)],
+            "summary": "立即检查并清理待处理种子",
+        }]
+
+    def run_now(self) -> dict:
+        """Use the same checks, preview mode and lock as the scheduled scan."""
+        return self.scan_pending()
 
     def get_service(self) -> List[Dict[str, Any]]:
         """Ask MoviePilot to recheck queued torrents at a fixed interval."""
@@ -165,7 +178,7 @@ class TransferSeedCleaner(_PluginBase):
         }
 
     def get_page(self) -> List[dict]:
-        """Show five neutral title/subtitle rows at a time, with history folded away."""
+        """Show flat title/subtitle lists and an authenticated run-now action."""
         pending = sorted(self._load_pending(), key=lambda item: float(item["last_event"]), reverse=True)
         history = list(reversed((self.get_data("history") or [])[-100:]))
         target_names = "、".join(sorted(self._downloaders)) or "未选择"
@@ -175,56 +188,71 @@ class TransferSeedCleaner(_PluginBase):
             item["name"] = item.get("name") or self._history_name(item)
             if "organized_names" not in item:
                 item["organized_names"] = self._history_organized_names(item) or []
-        return [{
+        running = self._scan_lock.locked()
+        can_run = (self._enabled and not running
+                   and any(item["downloader"] in self._downloaders for item in pending))
+        page = [{
+            "component": "div",
+            "props": {"class": "d-flex align-center flex-wrap mb-3", "style": "gap: 12px;"},
+            "content": [{
+                "component": "VBtn",
+                "props": {"color": "primary", "variant": "flat", "disabled": not can_run},
+                "text": "立即执行",
+                "events": {"click": {
+                    "api": f"plugin/{self.__class__.__name__}/run_now",
+                    "method": "post",
+                    "params": {},
+                }},
+            }, {
+                "component": "span", "props": {"class": "text-body-2 text-medium-emphasis"},
+                "text": "正在检查待处理种子…" if running else (
+                    "立即检查待处理列表；当前为预览模式，不会删除。" if self._dry_run
+                    else "立即检查待处理列表，并清理符合条件的种子。"
+                ),
+            }],
+        }, {
             "component": "div",
             "props": {"class": "text-body-2 text-medium-emphasis mb-3"},
             "text": (f"{'已启用' if self._enabled else '已停用'} · "
                      f"{'预览模式' if self._dry_run else '自动清理'} · "
                      f"每 {self._interval_minutes} 分钟检查 · 下载器：{target_names}"),
-        }, {
-            "component": "VExpansionPanels",
-            "props": {"modelValue": 0, "multiple": False, "variant": "accordion"},
-            "content": [
-                self._record_section("待处理", pending),
-                self._record_section("清理记录", history, deleted=True),
-            ],
         }]
+        last_run = self.get_data("last_run")
+        if last_run:
+            page.append({
+                "component": "div", "props": {"class": "text-caption text-medium-emphasis mb-3"},
+                "text": (f"最近执行：{last_run.get('time')} · {last_run.get('message')} · "
+                         f"检查 {last_run.get('checked', 0)} 个 · 清理 {last_run.get('deleted', 0)} 个 · "
+                         f"预览可清理 {last_run.get('ready', 0)} 个 · 保留 {last_run.get('retained', 0)} 个"),
+            })
+        page.extend([
+            self._record_section("待处理", pending),
+            self._record_section("清理记录", history, deleted=True),
+        ])
+        return page
 
     def _record_section(self, title: str, items: List[dict], deleted: bool = False) -> dict:
-        pages = []
-        for offset in range(0, len(items), 5):
-            rows = []
-            for item in items[offset:offset + 5]:
-                if rows:
-                    rows.append({"component": "div", "props": {
-                        "role": "separator", "style": "border-top: 1px solid rgba(var(--v-theme-on-surface), 0.12);",
-                    }})
-                rows.append(self._record_row(item, deleted))
-            pages.append({
-                "component": "VExpansionPanel",
-                "content": [{
-                    "component": "VExpansionPanelTitle",
-                    "text": f"第 {offset // 5 + 1} 组 · {offset + 1}–{min(offset + 5, len(items))} / {len(items)} 条",
-                }, {
-                    "component": "VExpansionPanelText",
-                    "content": [{"component": "VList", "props": {"density": "compact"}, "content": rows}],
-                }],
-            })
-        if not pages:
+        rows = []
+        for item in items:
+            if rows:
+                rows.append({"component": "div", "props": {
+                    "role": "separator", "style": "border-top: 1px solid rgba(var(--v-theme-on-surface), 0.12);",
+                }})
+            rows.append(self._record_row(item, deleted))
+        if not rows:
             content = [{"component": "div", "props": {"class": "text-body-2 text-medium-emphasis py-2"},
                         "text": "暂无清理记录" if deleted else "暂无待处理种子"}]
-        elif len(pages) == 1:
-            content = pages[0]["content"][1]["content"]
         else:
             content = [{
-                "component": "VExpansionPanels",
-                "props": {"modelValue": 0, "multiple": False, "variant": "accordion"},
-                "content": pages,
+                "component": "VList",
+                "props": {"density": "compact", "style": f"max-height: {360 if deleted else 480}px; overflow-y: auto;"},
+                "content": rows,
             }]
         return {
-            "component": "VExpansionPanel",
-            "content": [{"component": "VExpansionPanelTitle", "text": f"{title} · {len(items)}"},
-                        {"component": "VExpansionPanelText", "content": content}],
+            "component": "VCard",
+            "props": {"variant": "outlined", "class": "mb-3"},
+            "content": [{"component": "VCardTitle", "props": {"class": "text-subtitle-1"}, "text": f"{title} · {len(items)}"},
+                        {"component": "VCardText", "content": content}],
         }
 
     def _record_row(self, item: dict, deleted: bool) -> dict:
@@ -521,14 +549,23 @@ class TransferSeedCleaner(_PluginBase):
             media_extensions=settings.RMT_MEDIAEXT,
         )
 
-    def scan_pending(self):
+    def scan_pending(self) -> dict:
         """Reconcile queued torrents and remove only candidates that pass every check."""
-        if not self._enabled or not self._scan_lock.acquire(blocking=False):
-            return
+        result = {"success": True, "message": "检查完成", "checked": 0,
+                  "deleted": 0, "ready": 0, "retained": 0}
+        if not self._enabled:
+            return dict(result, success=False, message="请先启用插件")
+        if not self._downloaders:
+            return dict(result, success=False, message="请先选择允许清理的下载器")
+        if not self._scan_lock.acquire(blocking=False):
+            return dict(result, success=False, message="正在检查中，请稍后查看结果")
+        preview = self._dry_run
         try:
             pending = self._load_pending()
+            result["retained"] = len(pending)
             if not pending:
-                return
+                result["message"] = "暂无待处理种子"
+                return result
             selected_pending = []
             for item in pending:
                 if item["downloader"] in self._downloaders:
@@ -536,24 +573,28 @@ class TransferSeedCleaner(_PluginBase):
                 else:
                     self._set_reason(item, "该下载器未选中，保留任务")
             if not selected_pending:
-                return
+                result["message"] = "所选下载器暂无待处理种子"
+                return result
             snapshot = self._snapshot_torrents()
             if snapshot is None:
-                return
+                result.update(success=False, message="无法核对下载器任务，本轮未执行清理")
+                return result
             all_torrents, service_types = snapshot
             download_oper = DownloadHistoryOper()
             transfer_oper = TransferHistoryOper()
             for item in selected_pending:
+                result["checked"] += 1
                 self._refresh_pending_metadata(item, all_torrents)
                 if service_types.get(item["downloader"]) not in ("qbittorrent", "transmission"):
                     self._set_reason(item, "仅支持 qBittorrent 和 Transmission 下载任务")
                     continue
                 try:
-                    result = self._inspect_pending(item, all_torrents, download_oper, transfer_oper)
-                    if not result.ready:
-                        self._set_reason(item, result.reason)
+                    inspection = self._inspect_pending(item, all_torrents, download_oper, transfer_oper)
+                    if not inspection.ready:
+                        self._set_reason(item, inspection.reason)
                         continue
-                    if self._dry_run:
+                    if preview or self._dry_run:
+                        result["ready"] += 1
                         self._set_reason(item, "预览：符合删除条件")
                         continue
                     # Recheck live tasks and files immediately before the destructive call.
@@ -582,15 +623,37 @@ class TransferSeedCleaner(_PluginBase):
                         if item["downloader"] not in self._downloaders:
                             self._set_reason(item, "该下载器未选中，保留任务")
                             continue
+                        if not self._enabled:
+                            self._set_reason(item, "插件已停用，保留任务")
+                            result.update(success=False, message="插件已停用，本轮检查已停止")
+                            break
+                        if preview or self._dry_run:
+                            result["ready"] += 1
+                            self._set_reason(item, "预览：符合删除条件")
+                            continue
                         if self.chain.remove_torrents(
                             hashs=item["hash"], delete_file=True, downloader=item["downloader"]
                         ):
+                            result["deleted"] += 1
+                            result["retained"] -= 1
                             self._record_deleted(item)
                             logger.info(f"整理后清理做种：已删除 {self._task_label(item)} 及下载文件")
                         else:
                             self._set_reason(item, "下载器删除失败，等待下次重试")
                 except Exception as error:
+                    result.update(success=False, message="检查结束，部分任务复核异常")
                     logger.error(f"整理后清理做种：复核 {self._task_label(item)} 失败：{error}")
                     self._set_reason(item, "复核异常，等待下次重试")
+            return result
+        except Exception as error:
+            logger.error(f"整理后清理做种：本轮检查异常：{error}")
+            result.update(success=False, message="本轮检查异常，未完成的任务已保留")
+            return result
         finally:
-            self._scan_lock.release()
+            result["time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            try:
+                self.save_data("last_run", dict(result))
+            except Exception as error:
+                logger.error(f"整理后清理做种：保存本次执行结果失败：{error}")
+            finally:
+                self._scan_lock.release()
