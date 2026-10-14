@@ -28,7 +28,7 @@ class TransferSeedCleaner(_PluginBase):
     plugin_name = "整理后清理做种"
     plugin_desc = "确认整种已安全入库后，删除下载器任务和下载文件。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
-    plugin_version = "1.3.0"
+    plugin_version = "1.3.1"
     plugin_author = "sunbroke555"
     author_url = "https://github.com/sunbroke555"
     plugin_config_prefix = "transferseedcleaner_"
@@ -547,6 +547,7 @@ class TransferSeedCleaner(_PluginBase):
             download_files=download_oper.get_files_by_hash(item["hash"]),
             transfer_histories=transfer_oper.list_by_hash(item["hash"]),
             media_extensions=settings.RMT_MEDIAEXT,
+            torrent_file_lookup=self.chain.torrent_files,
         )
 
     def scan_pending(self) -> dict:

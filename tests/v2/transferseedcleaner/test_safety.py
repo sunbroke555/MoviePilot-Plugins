@@ -4,6 +4,8 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 
@@ -155,20 +157,119 @@ def test_unfinished_or_unknown_download_progress_blocks_cleanup(tmp_path, progre
 
 
 @pytest.mark.parametrize("other_path", ["same", "parent", "child"])
-def test_shared_download_path_blocks_cleanup(tmp_path, other_path):
+def test_shared_directory_with_separate_files_allows_cleanup(tmp_path, other_path):
     arguments = _candidate(tmp_path)
     content = Path(arguments["torrent"]["content_path"])
     paths = {"same": content, "parent": content.parent, "child": content / "other"}
+    root = paths[other_path]
+    other_file = root / "OtherShow.mkv"
+    other_file.parent.mkdir(parents=True, exist_ok=True)
+    other_file.write_bytes(b"another torrent's video")
     arguments["all_torrents"].append({
         "hash": "OTHER",
         "downloader": "qb",
-        "content_path": str(paths[other_path]),
+        "content_path": str(root),
+        "save_path": str(root),
     })
+    lookup = Mock(return_value=SimpleNamespace(data=[{"name": other_file.name}]))
+    arguments["torrent_file_lookup"] = lookup
+
+    result = _inspect(arguments)
+
+    assert result.ready, result.reason
+    lookup.assert_called_once_with(tid="other", downloader="qb")
+    assert other_file.read_bytes() == b"another torrent's video"
+
+
+@pytest.mark.parametrize("other_path", ["same", "parent", "child", "symlink"])
+def test_shared_file_blocks_cleanup_and_identifies_conflicting_torrent(tmp_path, other_path):
+    arguments = _candidate(tmp_path)
+    content = Path(arguments["torrent"]["content_path"])
+    source = Path(arguments["download_files"][0]["fullpath"])
+    alias = tmp_path / "downloads-alias"
+    alias.symlink_to(content, target_is_directory=True)
+    paths = {"same": content, "parent": content.parent, "child": source.parent, "symlink": alias}
+    root = paths[other_path]
+    other_file = alias / source.relative_to(content) if other_path == "symlink" else source
+    arguments["all_torrents"].append({
+        "hash": "OTHER", "title": "Other.Show.Full.Torrent.Name", "downloader": "qb",
+        "content_path": str(root), "save_path": str(root),
+    })
+    arguments["torrent_file_lookup"] = Mock(return_value=[{
+        "name": str(other_file.relative_to(root)), "selected": False, "priority": 0,
+    }])
 
     result = _inspect(arguments)
 
     assert not result.ready
     assert "共用下载数据" in result.reason
+    assert "Other.Show.Full.Torrent.Name" in result.reason
+    assert str(source) in result.reason
+    assert str(other_file) in result.reason
+
+
+def test_shared_inode_in_same_directory_blocks_cleanup(tmp_path):
+    arguments = _candidate(tmp_path)
+    source = Path(arguments["download_files"][0]["fullpath"])
+    other_file = source.with_name("OtherName.mkv")
+    os.link(source, other_file)
+    arguments["all_torrents"].append({
+        "hash": "OTHER", "downloader": "qb", "title": "Other torrent",
+        "content_path": str(source.parent), "save_path": str(source.parent),
+    })
+    arguments["torrent_file_lookup"] = Mock(return_value=[{"name": other_file.name}])
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+    assert "共用下载数据" in result.reason
+    assert str(other_file) in result.reason
+
+
+@pytest.mark.parametrize("failure", [
+    "no_lookup", "none", "empty", "exception", "escape", "outside_content", "duplicate",
+])
+def test_uncertain_shared_directory_file_inventory_blocks_cleanup(tmp_path, failure):
+    arguments = _candidate(tmp_path)
+    content = Path(arguments["torrent"]["content_path"])
+    arguments["all_torrents"].append({
+        "hash": "OTHER", "downloader": "qb", "title": "Unverified torrent",
+        "content_path": str(content), "save_path": str(content.parent),
+    })
+    lookup = Mock(return_value=[{"name": "Show/Other.mkv"}])
+    arguments["torrent_file_lookup"] = lookup
+    if failure == "no_lookup":
+        arguments.pop("torrent_file_lookup")
+    elif failure == "exception":
+        lookup.side_effect = RuntimeError("downloader unavailable")
+    else:
+        lookup.return_value = {
+            "none": None,
+            "empty": [],
+            "escape": [{"name": "../Other.mkv"}],
+            "outside_content": [{"name": "Elsewhere/Other.mkv"}],
+            "duplicate": [{"name": "Show/Other.mkv"}, {"name": "Show/Other.mkv"}],
+        }[failure]
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+    assert "无法核对共享目录种子的文件清单" in result.reason
+    assert "Unverified torrent" in result.reason
+
+
+def test_separate_content_paths_do_not_require_other_file_queries(tmp_path):
+    arguments = _candidate(tmp_path)
+    arguments["all_torrents"].append({
+        "hash": "OTHER", "downloader": "qb", "content_path": str(tmp_path / "other"),
+    })
+    lookup = Mock(side_effect=AssertionError("unnecessary downloader request"))
+    arguments["torrent_file_lookup"] = lookup
+
+    result = _inspect(arguments)
+
+    assert result.ready, result.reason
+    lookup.assert_not_called()
 
 
 def test_torrent_file_count_disagrees_with_download_records(tmp_path):
@@ -227,15 +328,29 @@ def test_absolute_torrent_filename_is_rejected(tmp_path):
     assert "路径无效" in result.reason
 
 
-def test_unregistered_extra_file_in_torrent_directory_blocks_cleanup(tmp_path):
+def test_unrelated_extra_file_in_shared_directory_does_not_block_cleanup(tmp_path):
     arguments = _candidate(tmp_path)
     extra = Path(arguments["torrent"]["content_path"]) / "unregistered.nfo"
     extra.write_bytes(b"torrent sidecar")
 
     result = _inspect(arguments)
 
+    assert result.ready, result.reason
+    assert extra.read_bytes() == b"torrent sidecar"
+
+
+def test_symlink_in_candidate_parent_path_still_blocks_cleanup(tmp_path):
+    arguments = _candidate(tmp_path)
+    content = Path(arguments["torrent"]["content_path"])
+    season = content / "Season 1"
+    moved = tmp_path / "original-season"
+    season.rename(moved)
+    season.symlink_to(moved, target_is_directory=True)
+
+    result = _inspect(arguments)
+
     assert not result.ready
-    assert "未登记文件" in result.reason
+    assert "软链接" in result.reason
 
 
 def test_copy_with_different_target_size_blocks_cleanup(tmp_path):

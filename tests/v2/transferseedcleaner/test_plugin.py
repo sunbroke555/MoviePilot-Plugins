@@ -369,6 +369,79 @@ def test_rtorrent_candidate_is_retained_without_deleting_directory(runtime, plug
     assert "仅支持 qBittorrent 和 Transmission" in plugin.get_data("pending")[0]["reason"]
 
 
+def test_shared_directory_with_independent_files_cleans_only_candidate(runtime, plugin_module):
+    plugin, chain, event = runtime
+    candidate = chain.list_torrents.return_value[0]
+    source = Path(candidate.save_path) / "Show.mkv"
+    other_file = source.with_name("OtherShow.mkv")
+    other_file.write_bytes(b"other torrent data")
+    destination = Path(plugin_module.TransferHistoryOper().list_by_hash.return_value[0].dest)
+    chain.list_torrents.return_value.append(SimpleNamespace(
+        hash="other", downloader="qb", progress=100, title="OtherShow",
+        content_path=candidate.content_path, save_path=candidate.save_path,
+    ))
+    plugin_module.DownloaderHelper.downloader.get_torrents.return_value = (
+        [SimpleNamespace(hash="abc123"), SimpleNamespace(hash="other")], False
+    )
+    chain.torrent_files.side_effect = lambda tid, downloader: [
+        SimpleNamespace(name="Show.mkv" if tid == "abc123" else "OtherShow.mkv", selected=True)
+    ]
+
+    def remove_candidate(**kwargs):
+        assert kwargs == {"hashs": "abc123", "delete_file": True, "downloader": "qb"}
+        source.unlink()
+        return True
+
+    chain.remove_torrents.side_effect = remove_candidate
+    plugin.on_transfer_complete(event)
+
+    plugin.scan_pending()
+
+    chain.remove_torrents.assert_called_once_with(
+        hashs="abc123", delete_file=True, downloader="qb"
+    )
+    assert not source.exists()
+    assert other_file.read_bytes() == b"other torrent data"
+    assert destination.read_bytes() == b"downloaded video"
+    assert plugin.get_data("pending") == []
+    assert plugin.get_data("history")[-1]["action"] == "deleted"
+    assert [call.kwargs["tid"] for call in chain.torrent_files.call_args_list].count("other") == 2
+
+
+def test_shared_directory_file_list_is_refetched_before_deletion(runtime, plugin_module):
+    plugin, chain, event = runtime
+    candidate = chain.list_torrents.return_value[0]
+    chain.list_torrents.return_value.append(SimpleNamespace(
+        hash="other", downloader="qb", progress=100, title="Newly shared torrent",
+        content_path=candidate.content_path, save_path=candidate.save_path,
+    ))
+    plugin_module.DownloaderHelper.downloader.get_torrents.return_value = (
+        [SimpleNamespace(hash="abc123"), SimpleNamespace(hash="other")], False
+    )
+    other_requests = 0
+
+    def file_list(tid, downloader):
+        nonlocal other_requests
+        name = "Show.mkv"
+        if tid == "other":
+            other_requests += 1
+            if other_requests == 1:
+                name = "OtherShow.mkv"
+        return [SimpleNamespace(name=name, selected=True)]
+
+    chain.torrent_files.side_effect = file_list
+    plugin.on_transfer_complete(event)
+
+    plugin.scan_pending()
+
+    assert other_requests == 2
+    chain.remove_torrents.assert_not_called()
+    reason = plugin.get_data("pending")[0]["reason"]
+    assert "共用下载数据" in reason
+    assert "Newly shared torrent" in reason
+    assert "Show.mkv" in reason
+
+
 def test_new_overlapping_torrent_after_first_inspection_blocks_removal(runtime, plugin_module):
     plugin, chain, event = runtime
     plugin.on_transfer_complete(event)

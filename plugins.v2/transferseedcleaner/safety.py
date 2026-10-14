@@ -1,9 +1,9 @@
-"""Pure checks used before removing a MoviePilot V2 download task and its data."""
+"""File-level checks before removing a MoviePilot V2 download task and its data."""
 
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 
 @dataclass(frozen=True)
@@ -54,6 +54,30 @@ def _inside(root: str, path: str) -> bool:
         return False
 
 
+def _file_map(save_path: str, files: Any) -> dict:
+    """Resolve a downloader's complete file list without accepting escaping paths."""
+    if not isinstance(files, (list, tuple)):
+        files = getattr(files, "data", None)
+    if not save_path or not files or not isinstance(files, (list, tuple)):
+        raise ValueError("无法取得种子文件列表")
+    resolved = {}
+    for file in files:
+        name = _relative(_value(file, "name"))
+        if (not name or name.startswith("/") or ":" in name.split("/")[0]
+                or any(part in ("", ".", "..") for part in name.split("/"))):
+            raise ValueError("种子文件路径无效")
+        fullpath = os.path.normpath(os.path.join(save_path, name))
+        if not _inside(save_path, fullpath) or fullpath in resolved:
+            raise ValueError("种子文件路径无效")
+        resolved[fullpath] = (name, file)
+    return resolved
+
+
+def _task_label(torrent: Any) -> str:
+    name = _value(torrent, "title") or _value(torrent, "name") or _value(torrent, "hash") or "名称未知"
+    return f"{name}（{_value(torrent, 'downloader')} / {_value(torrent, 'hash')}）"
+
+
 def inspect_candidate(
     *,
     download_hash: str,
@@ -65,6 +89,7 @@ def inspect_candidate(
     download_files: Iterable[Any],
     transfer_histories: Iterable[Any],
     media_extensions: Iterable[str],
+    torrent_file_lookup: Optional[Callable[..., Any]] = None,
 ) -> CheckResult:
     """Require complete, independently stored output for every registered file.
 
@@ -92,6 +117,45 @@ def inspect_candidate(
             or os.path.islink(content_path) or not os.path.exists(content_path)
             or not _inside(save_path, content_path)):
         return CheckResult(False, "无法确认种子内容路径")
+    media_exts = {str(ext).lower() for ext in media_extensions}
+    try:
+        listed_by_path = _file_map(save_path, torrent_files)
+    except ValueError as error:
+        return CheckResult(False, str(error))
+    listed_by_name = {name: (file, path) for path, (name, file) in listed_by_path.items()}
+    content_directory_ids = set()
+    candidate_realpaths = {}
+    candidate_file_ids = {}
+    content_is_directory = os.path.isdir(content_path)
+    directory_root = content_path if content_is_directory else os.path.dirname(content_path)
+    try:
+        # The downloader deletes its own file list, not every file under save_path.
+        # Inspect only those paths; unrelated files in the shared directory are retained.
+        for source in listed_by_path:
+            if not _inside(content_path, source) or (not content_is_directory and source != content_path):
+                return CheckResult(False, "种子内容路径与文件清单不一致")
+            current = Path(source)
+            while _inside(save_path, str(current)):
+                if os.path.islink(current):
+                    return CheckResult(False, "种子文件路径包含软链接")
+                if str(current) != source and current.exists():
+                    if not current.is_dir():
+                        return CheckResult(False, "种子文件父路径不是目录")
+                    if _inside(directory_root, str(current)):
+                        info = current.stat()
+                        content_directory_ids.add((info.st_dev, info.st_ino))
+                if str(current) == save_path:
+                    break
+                current = current.parent
+            if os.path.lexists(source):
+                if not os.path.isfile(source):
+                    return CheckResult(False, "种子文件清单包含未知文件类型")
+                info = os.stat(source)
+                candidate_file_ids[(info.st_dev, info.st_ino)] = source
+            candidate_realpaths[os.path.realpath(source)] = source
+    except OSError:
+        return CheckResult(False, "无法核对种子文件路径")
+
     others = list(all_torrents or [])
     if not others:
         return CheckResult(False, "无法核对下载器中的其他任务")
@@ -102,63 +166,35 @@ def inspect_candidate(
             continue
         other_path = _path(_value(other, "content_path") or _value(other, "path"))
         if not other_path:
-            return CheckResult(False, "其他种子的内容路径未知")
-        if (_overlaps(content_path, other_path)
-                or _overlaps(os.path.realpath(content_path), os.path.realpath(other_path))):
-            return CheckResult(False, "其他种子共用下载数据")
-
-    media_exts = {str(ext).lower() for ext in media_extensions}
-    listed = list(torrent_files or [])
-    if not listed:
-        return CheckResult(False, "无法取得种子文件列表")
-    listed_by_name = {}
-    listed_by_path = {}
-    for file in listed:
-        name = _relative(_value(file, "name"))
-        if (not name or name.startswith("/") or ":" in name.split("/")[0]
-                or any(part in ("", ".", "..") for part in name.split("/"))
-                or name in listed_by_name):
-            return CheckResult(False, "种子文件路径无效")
-        fullpath = os.path.normpath(os.path.join(save_path, name))
-        if not _inside(save_path, fullpath) or fullpath in listed_by_path:
-            return CheckResult(False, "种子文件路径无效")
-        listed_by_name[name] = (file, fullpath)
-        listed_by_path[fullpath] = (name, file)
-
-    content_directory_ids = set()
-    if os.path.isdir(content_path):
-        actual_files = set()
-
-        def raise_walk_error(error):
-            """Make an unreadable directory fail the inventory check."""
-            raise error
-
+            return CheckResult(False, f"其他种子的内容路径未知：{_task_label(other)}")
+        overlapping = (_overlaps(content_path, other_path)
+                       or _overlaps(os.path.realpath(content_path), os.path.realpath(other_path)))
+        if not overlapping:
+            try:
+                overlapping = os.path.samefile(content_path, other_path)
+            except OSError:
+                pass
+        if not overlapping:
+            continue
         try:
-            for directory, dirs, files in os.walk(content_path, onerror=raise_walk_error):
-                directory_stat = os.stat(directory)
-                content_directory_ids.add((directory_stat.st_dev, directory_stat.st_ino))
-                if any(os.path.islink(os.path.join(directory, entry)) for entry in dirs + files):
-                    return CheckResult(False, "种子目录包含软链接")
-                for filename in files:
-                    actual = os.path.normpath(os.path.join(directory, filename))
-                    if not os.path.isfile(actual):
-                        return CheckResult(False, "种子目录包含未知文件类型")
-                    actual_files.add(actual)
-        except OSError:
-            return CheckResult(False, "无法完整读取种子内容目录")
-        listed_files = {
-            path for _, path in listed_by_name.values() if os.path.isfile(path)
-        }
-        if actual_files != listed_files:
-            return CheckResult(False, "种子目录包含未登记文件或文件路径不一致")
-    else:
-        if content_path not in {path for _, path in listed_by_name.values()}:
-            return CheckResult(False, "种子内容文件与清单不一致")
-        try:
-            parent_stat = os.stat(os.path.dirname(content_path))
-            content_directory_ids.add((parent_stat.st_dev, parent_stat.st_ino))
-        except OSError:
-            return CheckResult(False, "无法核对种子内容目录")
+            if not other_hash or not other_downloader or torrent_file_lookup is None:
+                raise ValueError("缺少文件清单查询信息")
+            other_save_path = _path(_value(other, "save_path"))
+            other_files = _file_map(other_save_path, torrent_file_lookup(
+                tid=other_hash, downloader=other_downloader
+            ))
+            if not _inside(other_save_path, other_path) or any(
+                    not _inside(other_path, path) for path in other_files):
+                raise ValueError("内容路径与文件清单不一致")
+            for path in other_files:
+                conflict = candidate_realpaths.get(os.path.realpath(path))
+                if not conflict and os.path.exists(path):
+                    info = os.stat(path)
+                    conflict = candidate_file_ids.get((info.st_dev, info.st_ino))
+                if conflict:
+                    return CheckResult(False, f"其他种子共用下载数据：{_task_label(other)}；冲突文件：{conflict}；对方文件：{path}")
+        except Exception:
+            return CheckResult(False, f"无法核对共享目录种子的文件清单：{_task_label(other)}；内容路径：{other_path}")
 
     torrent_videos = {
         path for name, (file, path) in listed_by_name.items()
