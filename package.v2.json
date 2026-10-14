@@ -87,14 +87,15 @@
   "TransferSeedCleaner": {
     "v3": false,
     "name": "整理后清理做种",
-    "description": "定时复核 MoviePilot 已成功整理的下载任务，确认源文件可安全清理后删除下载器中的种子及下载文件；默认仅预览。",
+    "description": "定时复核 MoviePilot 已成功整理的下载任务，可选择下载器；确认安全后删除种子及下载文件，默认仅预览。",
     "labels": "文件整理,下载管理,做种",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "icon": "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png",
     "author": "sunbroke555",
     "level": 1,
     "release": false,
     "history": {
+      "v1.1.0": "增加可多选的下载器范围；未选择下载器时不执行清理。",
       "v1.0.0": "初版：成功整理记录与下载任务双重校验，定时复核后预览或清理种子和下载文件。"
     }
   }

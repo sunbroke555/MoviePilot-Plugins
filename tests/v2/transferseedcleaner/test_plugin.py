@@ -54,7 +54,7 @@ def plugin_module(monkeypatch):
         )
 
         def get_configs(self):
-            return {"qb": object()}
+            return {"qb": SimpleNamespace(type="qbittorrent", enabled=True)}
 
         def get_services(self):
             return {"qb": SimpleNamespace(type=self.service_type, instance=self.downloader)}
@@ -126,7 +126,9 @@ def runtime(tmp_path, plugin_module):
     plugin_module.DownloadHistoryOper = lambda: download_oper
     plugin_module.TransferHistoryOper = lambda: transfer_oper
     plugin = plugin_module.TransferSeedCleaner()
-    plugin.init_plugin({"enabled": True, "dry_run": False, "wait_minutes": 1})
+    plugin.init_plugin({
+        "enabled": True, "dry_run": False, "wait_minutes": 1, "downloaders": ["qb"]
+    })
     plugin.chain = chain
     event = plugin_module.Event({
         "downloader": "qb",
@@ -152,6 +154,26 @@ def test_transfer_event_only_queues_and_deduplicates(runtime):
     assert len(plugin.get_data("pending")) == 1
     assert plugin.get_data("pending")[0]["hash"] == "abc123"
     chain.remove_torrents.assert_not_called()
+
+
+def test_form_lists_configured_downloader_and_defaults_to_none(runtime):
+    plugin, _, _ = runtime
+
+    form, defaults = plugin.get_form()
+    selects = []
+
+    def find_selects(nodes):
+        for node in nodes:
+            if node.get("component") == "VSelect" and node.get("props", {}).get("model") == "downloaders":
+                selects.append(node["props"])
+            find_selects(node.get("content", []))
+
+    find_selects(form)
+
+    assert defaults["downloaders"] == []
+    assert len(selects) == 1
+    assert selects[0]["multiple"] is True
+    assert selects[0]["items"] == [{"title": "qb", "value": "qb"}]
 
 
 def test_preview_marks_ready_candidate_without_deleting(runtime):
@@ -180,6 +202,81 @@ def test_ready_candidate_removes_exact_task_and_data_once(runtime):
     )
     assert plugin.get_data("pending") == []
     assert plugin.get_data("history")[-1]["action"] == "deleted"
+
+
+def test_omitted_downloader_selection_keeps_existing_pending_task(runtime):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    _age_pending(plugin)
+    plugin.init_plugin({"enabled": True, "dry_run": False, "wait_minutes": 1})
+
+    plugin.scan_pending()
+
+    assert len(plugin.get_data("pending")) == 1
+    chain.torrent_files.assert_not_called()
+    chain.remove_torrents.assert_not_called()
+
+
+def test_unselected_downloader_event_is_not_queued(runtime):
+    plugin, chain, event = runtime
+    plugin.init_plugin({"enabled": True, "dry_run": False, "downloaders": []})
+
+    plugin.on_transfer_complete(event)
+
+    assert plugin.get_data("pending") is None
+    chain.remove_torrents.assert_not_called()
+
+
+def test_only_selected_downloader_can_reach_delete(runtime, plugin_module, monkeypatch, tmp_path):
+    plugin, chain, qb_event = runtime
+    tr_hash = "def456"
+    other_dir = tmp_path / "other-downloads"
+    other_dir.mkdir()
+    chain.list_torrents.return_value.append(SimpleNamespace(
+        hash=tr_hash, downloader="tr", progress=100,
+        content_path=str(other_dir), save_path=str(other_dir),
+    ))
+    qb_service = SimpleNamespace(
+        type="qbittorrent", instance=plugin_module.DownloaderHelper.downloader,
+    )
+    tr_downloader = SimpleNamespace(
+        is_inactive=MagicMock(return_value=False),
+        get_torrents=MagicMock(return_value=([SimpleNamespace(hash=tr_hash)], False)),
+    )
+    tr_service = SimpleNamespace(type="transmission", instance=tr_downloader)
+    configs = {
+        "qb": SimpleNamespace(type="qbittorrent", enabled=True),
+        "tr": SimpleNamespace(type="transmission", enabled=True),
+    }
+    services = {"qb": qb_service, "tr": tr_service}
+    helper = SimpleNamespace(get_configs=lambda: configs, get_services=lambda: services)
+    monkeypatch.setattr(plugin_module, "DownloaderHelper", lambda: helper)
+    plugin.init_plugin({
+        "enabled": True, "dry_run": False, "wait_minutes": 1,
+        "downloaders": ["qb", "tr"],
+    })
+    plugin.on_transfer_complete(qb_event)
+    plugin.on_transfer_complete(plugin_module.Event({
+        "downloader": "tr", "download_hash": tr_hash,
+        "transferinfo": SimpleNamespace(success=True),
+    }))
+    pending = plugin.get_data("pending")
+    assert len(pending) == 2
+    for item in pending:
+        item["last_event"] = time.time() - 120
+    plugin.init_plugin({
+        "enabled": True, "dry_run": False, "wait_minutes": 1,
+        "downloaders": ["qb"],
+    })
+
+    plugin.scan_pending()
+
+    chain.remove_torrents.assert_called_once_with(
+        hashs="abc123", delete_file=True, downloader="qb"
+    )
+    assert chain.torrent_files.call_count > 0
+    assert all(call.kwargs["downloader"] == "qb" for call in chain.torrent_files.call_args_list)
+    assert [item["downloader"] for item in plugin.get_data("pending")] == ["tr"]
 
 
 def test_failed_removal_keeps_candidate_for_retry(runtime):

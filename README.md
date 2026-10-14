@@ -183,4 +183,4 @@ cd2方式上传--strm回本地（暂时移除）
 
 ## 整理后清理做种（MoviePilot V2）
 
-在媒体整理成功后复核整个种子，确认可安全清理时删除 qBittorrent 或 Transmission 中的任务及下载文件。默认仅预览，可设置整理后等待时间与复核周期。软链接、未整理完或共用下载数据的任务会保留。安装和清理条件详见[插件说明](plugins.v2/transferseedcleaner/README.md)。
+在媒体整理成功后复核整个种子，确认可安全清理时删除选中下载器中的任务及下载文件。可多选 qBittorrent 或 Transmission 下载器；未选择时不会清理。默认仅预览，可设置整理后等待时间与复核周期。软链接、未整理完或共用下载数据的任务会保留。安装和清理条件详见[插件说明](plugins.v2/transferseedcleaner/README.md)。

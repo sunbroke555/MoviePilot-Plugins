@@ -25,7 +25,7 @@ class TransferSeedCleaner(_PluginBase):
     plugin_name = "整理后清理做种"
     plugin_desc = "确认整种已安全入库后，删除下载器任务和下载文件。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
-    plugin_version = "1.0.0"
+    plugin_version = "1.1.0"
     plugin_author = "sunbroke555"
     author_url = "https://github.com/sunbroke555"
     plugin_config_prefix = "transferseedcleaner_"
@@ -36,6 +36,7 @@ class TransferSeedCleaner(_PluginBase):
     _dry_run = True
     _interval_minutes = 10
     _wait_minutes = 10
+    _downloaders = frozenset()
 
     def init_plugin(self, config: dict = None):
         """Apply validated settings while keeping pending work across reloads."""
@@ -44,6 +45,12 @@ class TransferSeedCleaner(_PluginBase):
         self._dry_run = bool(config.get("dry_run", True))
         self._interval_minutes = self._bounded_int(config.get("interval_minutes"), 10, 1, 1440)
         self._wait_minutes = self._bounded_int(config.get("wait_minutes"), 10, 1, 10080)
+        selected = config.get("downloaders") or []
+        if isinstance(selected, str):
+            selected = [selected]
+        self._downloaders = frozenset(
+            name.strip() for name in selected if isinstance(name, str) and name.strip()
+        ) if isinstance(selected, (list, tuple, set)) else frozenset()
         if not hasattr(self, "_pending_lock"):
             self._pending_lock = threading.RLock()
         if not hasattr(self, "_scan_lock"):
@@ -85,10 +92,33 @@ class TransferSeedCleaner(_PluginBase):
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         """Present deletion and timing choices in MoviePilot's V2 form format."""
+        try:
+            downloader_options = [
+                {"title": name, "value": name}
+                for name, config in DownloaderHelper().get_configs().items()
+                if getattr(config, "type", None) in ("qbittorrent", "transmission")
+            ]
+        except Exception as error:
+            logger.warning(f"整理后清理做种：无法读取下载器选项：{error}")
+            downloader_options = []
         return [
             {
                 "component": "VForm",
                 "content": [
+                    {
+                        "component": "VRow",
+                        "content": [
+                            {"component": "VCol", "props": {"cols": 12}, "content": [
+                                {"component": "VSelect", "props": {
+                                    "model": "downloaders", "label": "允许清理的下载器",
+                                    "items": downloader_options, "multiple": True,
+                                    "chips": True, "clearable": True,
+                                    "hint": "只清理选中的下载器；不选择则不会清理。",
+                                    "persistent-hint": True,
+                                }},
+                            ]},
+                        ],
+                    },
                     {
                         "component": "VRow",
                         "content": [
@@ -130,6 +160,7 @@ class TransferSeedCleaner(_PluginBase):
         ], {
             "enabled": False,
             "dry_run": True,
+            "downloaders": [],
             "interval_minutes": 10,
             "wait_minutes": 10,
         }
@@ -138,12 +169,15 @@ class TransferSeedCleaner(_PluginBase):
         """Show queued work and recent cleanup decisions."""
         pending = self._load_pending()
         history = self.get_data("history") or []
+        target_names = "、".join(sorted(self._downloaders)) or "未选择"
         page = [{
             "component": "VAlert",
             "props": {
                 "type": "info",
                 "variant": "tonal",
-                "text": f"待复核：{len(pending)} 个种子；模式：{'预览' if self._dry_run else '实际删除'}。",
+                "text": (f"待复核：{len(pending)} 个种子；"
+                         f"模式：{'预览' if self._dry_run else '实际删除'}；"
+                         f"允许清理的下载器：{target_names}。"),
             },
         }]
         for item in pending[-20:]:
@@ -197,7 +231,7 @@ class TransferSeedCleaner(_PluginBase):
             return
         downloader = str(data.get("downloader") or "").strip()
         download_hash = str(data.get("download_hash") or "").strip()
-        if not downloader or not download_hash:
+        if not downloader or downloader not in self._downloaders or not download_hash:
             return
         with self._pending_lock:
             pending = self._load_pending()
@@ -337,13 +371,21 @@ class TransferSeedCleaner(_PluginBase):
             pending = self._load_pending()
             if not pending:
                 return
+            selected_pending = []
+            for item in pending:
+                if item["downloader"] in self._downloaders:
+                    selected_pending.append(item)
+                else:
+                    self._set_reason(item, "该下载器未选中，保留任务")
+            if not selected_pending:
+                return
             snapshot = self._snapshot_torrents()
             if snapshot is None:
                 return
             all_torrents, service_types = snapshot
             download_oper = DownloadHistoryOper()
             transfer_oper = TransferHistoryOper()
-            for item in pending:
+            for item in selected_pending:
                 if service_types.get(item["downloader"]) not in ("qbittorrent", "transmission"):
                     self._set_reason(item, "仅支持 qBittorrent 和 Transmission 下载任务")
                     continue
@@ -380,6 +422,9 @@ class TransferSeedCleaner(_PluginBase):
                                         if entry["downloader"] == item["downloader"]
                                         and entry["hash"].lower() == item["hash"].lower()), None)
                         if not current or current.get("last_event") != item.get("last_event"):
+                            continue
+                        if item["downloader"] not in self._downloaders:
+                            self._set_reason(item, "该下载器未选中，保留任务")
                             continue
                         if time.time() - float(current.get("last_event") or 0) < self._wait_minutes * 60:
                             continue
