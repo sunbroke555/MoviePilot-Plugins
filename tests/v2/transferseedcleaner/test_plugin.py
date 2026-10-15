@@ -647,6 +647,81 @@ def test_multifile_torrent_waits_until_every_file_is_organized(runtime, plugin_m
     )
 
 
+def _add_old_unselected_episode(chain, plugin_module):
+    """Keep the old full-pack history after qBittorrent skips an absent episode."""
+    download_oper = plugin_module.DownloadHistoryOper()
+    first_file = download_oper.get_files_by_hash.return_value[0]
+    skipped_source = Path(first_file.fullpath).with_name("Show.S01E02.mkv")
+    assert not skipped_source.exists()
+    # qBittorrent uses priority instead of a separate selected field.
+    skipped_file = SimpleNamespace(name=skipped_source.name, priority=0, progress=0)
+    chain.torrent_files.return_value.append(skipped_file)
+    download_oper.get_files_by_hash.return_value.append(SimpleNamespace(
+        filepath=skipped_source.name, fullpath=str(skipped_source), downloader="qb", state=0,
+    ))
+    return skipped_file
+
+
+@pytest.mark.parametrize("entrypoint", ["scan_pending", "run_now"])
+@pytest.mark.parametrize("preview", [False, True])
+def test_single_selected_episode_cleans_up_despite_old_unselected_file_record(
+    runtime, plugin_module, entrypoint, preview
+):
+    plugin, chain, event = runtime
+    _add_old_unselected_episode(chain, plugin_module)
+    plugin._dry_run = preview
+    plugin.on_transfer_complete(event)
+
+    result = getattr(plugin, entrypoint)()
+
+    assert result["success"] is True
+    assert result["checked"] == 1
+    assert result["deleted"] == (0 if preview else 1)
+    assert result["ready"] == (1 if preview else 0)
+    assert result["retained"] == (1 if preview else 0)
+    if preview:
+        chain.remove_torrents.assert_not_called()
+        assert plugin.get_data("pending")[0]["reason"] == "预览：符合删除条件"
+        assert not plugin.get_data("history")
+    else:
+        chain.remove_torrents.assert_called_once_with(
+            hashs="abc123", delete_file=True, downloader="qb"
+        )
+        assert plugin.get_data("pending") == []
+        assert plugin.get_data("history")[0]["action"] == "deleted"
+
+
+@pytest.mark.parametrize("entrypoint", ["scan_pending", "run_now"])
+@pytest.mark.parametrize("stage", ["snapshot", "file_list"])
+def test_reselected_episode_before_delete_retains_old_full_pack(
+    runtime, plugin_module, entrypoint, stage
+):
+    plugin, chain, event = runtime
+    skipped_file = _add_old_unselected_episode(chain, plugin_module)
+    query = chain.list_torrents if stage == "snapshot" else chain.torrent_files
+
+    def reselect_before_second_query(*args, **kwargs):
+        if query.call_count == 2:
+            skipped_file.priority = 1
+        return query.return_value
+
+    query.side_effect = reselect_before_second_query
+    plugin.on_transfer_complete(event)
+
+    result = getattr(plugin, entrypoint)()
+
+    assert query.call_count == 2
+    assert skipped_file.priority == 1
+    assert result["success"] is True
+    assert result["checked"] == 1
+    assert result["deleted"] == 0
+    assert result["ready"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    assert not plugin.get_data("history")
+    chain.remove_torrents.assert_not_called()
+
+
 def test_transfer_event_records_full_history_torrent_name_instead_of_file_name(runtime, plugin_module):
     plugin, chain, event = runtime
     history = plugin_module.DownloadHistoryOper().get_by_hash.return_value

@@ -1,6 +1,7 @@
 """Destructive cleanup checks using only local files and downloader snapshots."""
 
 import importlib.util
+from copy import deepcopy
 import os
 import sys
 from pathlib import Path
@@ -109,6 +110,184 @@ def test_first_completed_episode_does_not_clear_multifile_torrent(tmp_path):
 
     assert not result.ready
     assert "没有整理记录" in result.reason
+
+
+def _deselected_episode(tmp_path, state=0):
+    """Keep MP's original whole-season records after qB deselects episode two."""
+    arguments = _candidate(tmp_path, names=("Season 1/E01.mkv", "Season 1/E02.mkv"))
+    arguments["torrent_files"][1].update(selected=False, priority=0, progress=0)
+    arguments["download_files"][1]["state"] = state
+    Path(arguments["download_files"][1]["fullpath"]).unlink()
+    history = arguments["transfer_histories"].pop()
+    Path(history["dest"]).unlink()
+    return arguments
+
+
+@pytest.mark.parametrize("state", [0, 1])
+@pytest.mark.parametrize("selection", [
+    {"priority": 0}, {"selected": False}, {"selected": False, "priority": 0},
+])
+def test_qb_deselected_never_downloaded_episode_ignores_stale_mp_record(tmp_path, state, selection):
+    arguments = _deselected_episode(tmp_path, state=state)
+    arguments["torrent_files"][1] = {
+        "name": arguments["torrent_files"][1]["name"], "progress": 0, **selection,
+    }
+    original_arguments = deepcopy(arguments)
+
+    result = _inspect(arguments)
+
+    assert result.ready, result.reason
+    assert arguments == original_arguments, "cleanup checks must not rewrite MoviePilot history"
+
+
+@pytest.mark.parametrize("selection", [
+    {"selected": True, "priority": 1},
+    {},
+    {"selected": None, "priority": None},
+    {"selected": "false", "priority": "unknown"},
+    {"selected": True, "priority": 0},
+    {"selected": False, "priority": 1},
+    {"priority": False},
+    {"selected": False, "priority": False},
+])
+def test_missing_episode_with_selected_unknown_or_conflicting_flags_is_not_ignored(tmp_path, selection):
+    arguments = _deselected_episode(tmp_path, state=1)
+    arguments["torrent_files"][1] = {
+        "name": arguments["torrent_files"][1]["name"], "progress": 0, **selection,
+    }
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+@pytest.mark.parametrize("has_download_record", [True, False])
+@pytest.mark.parametrize("progress", [0.01, 1, -1, "unknown", None, False, float("nan"), float("inf")])
+def test_deselected_missing_episode_with_nonzero_or_unknown_progress_is_not_ignored(
+        tmp_path, progress, has_download_record):
+    arguments = _deselected_episode(tmp_path, state=1)
+    arguments["torrent_files"][1]["progress"] = progress
+    if not has_download_record:
+        arguments["download_files"].pop()
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+@pytest.mark.parametrize("has_download_record", [True, False])
+def test_deselected_missing_episode_without_progress_is_not_ignored(tmp_path, has_download_record):
+    arguments = _deselected_episode(tmp_path, state=1)
+    arguments["torrent_files"][1].pop("progress")
+    if not has_download_record:
+        arguments["download_files"].pop()
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+@pytest.mark.parametrize("state", [0, 1])
+def test_deselected_episode_still_on_disk_requires_successful_transfer(tmp_path, state):
+    arguments = _candidate(tmp_path, names=("Season 1/E01.mkv", "Season 1/E02.mkv"))
+    arguments["torrent_files"][1].update(selected=False, priority=0, progress=0)
+    arguments["download_files"][1]["state"] = state
+    arguments["transfer_histories"].pop()
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+@pytest.mark.parametrize("progress", [0, 1])
+def test_deselected_episode_still_on_disk_can_be_cleaned_when_safely_organized(tmp_path, progress):
+    arguments = _candidate(tmp_path, names=("Season 1/E01.mkv", "Season 1/E02.mkv"))
+    arguments["torrent_files"][1].update(selected=False, priority=0, progress=progress)
+
+    result = _inspect(arguments)
+
+    assert result.ready, result.reason
+
+
+def test_deselected_existing_file_still_requires_complete_download_record(tmp_path):
+    arguments = _candidate(tmp_path, names=("Season 1/E01.mkv", "Season 1/E02.mkv"))
+    arguments["torrent_files"][1].update(selected=False, priority=0, progress=0)
+    arguments["download_files"][1]["state"] = 0
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+@pytest.mark.parametrize("invalid_record", [
+    "other_downloader", "relative_name_escape", "absolute_name", "other_source",
+    "relative_savepath", "wrong_savepath", "duplicate_record",
+])
+def test_deselected_absent_record_still_requires_valid_identity_and_path(tmp_path, invalid_record):
+    arguments = _deselected_episode(tmp_path, state=1)
+    record = arguments["download_files"][1]
+    if invalid_record == "other_downloader":
+        record["downloader"] = "another-qb"
+    elif invalid_record == "relative_name_escape":
+        record["filepath"] = "../Season 1/E02.mkv"
+    elif invalid_record == "absolute_name":
+        record["filepath"] = record["fullpath"]
+    elif invalid_record == "other_source":
+        record["fullpath"] = str(tmp_path / "outside" / "E02.mkv")
+    elif invalid_record == "relative_savepath":
+        record["savepath"] = "downloads/Show"
+    elif invalid_record == "wrong_savepath":
+        record["savepath"] = str(tmp_path / "outside")
+    else:
+        arguments["download_files"].append(dict(record))
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+def test_deselected_absent_episode_does_not_bypass_selected_episode_transfer(tmp_path):
+    arguments = _deselected_episode(tmp_path, state=1)
+    arguments["transfer_histories"].clear()
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+def test_all_media_deselected_and_absent_cannot_authorize_cleanup(tmp_path):
+    arguments = _deselected_episode(tmp_path, state=1)
+    arguments["torrent_files"][0].update(selected=False, priority=0, progress=0)
+    Path(arguments["download_files"][0]["fullpath"]).unlink()
+    arguments["transfer_histories"].clear()
+
+    result = _inspect(arguments)
+
+    assert not result.ready
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, OSError])
+def test_deselected_episode_access_error_is_not_treated_as_missing(tmp_path, monkeypatch, error_type):
+    arguments = _deselected_episode(tmp_path, state=1)
+    source = arguments["download_files"][1]["fullpath"]
+    original_lstat, original_stat = os.lstat, os.stat
+
+    def deny_lstat(path, *args, **kwargs):
+        if os.fspath(path) == source:
+            raise error_type("cannot inspect canceled file")
+        return original_lstat(path, *args, **kwargs)
+
+    def deny_stat(path, *args, **kwargs):
+        if os.fspath(path) == source:
+            raise error_type("cannot inspect canceled file")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(safety.os, "lstat", deny_lstat)
+    monkeypatch.setattr(safety.os, "stat", deny_stat)
+
+    result = _inspect(arguments)
+
+    assert not result.ready
 
 
 def test_latest_failed_transfer_blocks_cleanup(tmp_path):

@@ -29,7 +29,7 @@ class TransferSeedCleaner(_PluginBase):
     plugin_name = "整理后清理做种"
     plugin_desc = "确认整种已安全入库后，删除下载器任务和下载文件。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
-    plugin_version = "1.3.4"
+    plugin_version = "1.3.5"
     plugin_author = "sunbroke555"
     author_url = "https://github.com/sunbroke555"
     plugin_config_prefix = "transferseedcleaner_"

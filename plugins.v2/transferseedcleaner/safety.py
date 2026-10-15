@@ -23,6 +23,20 @@ def _value(item: Any, name: str, default: Any = None) -> Any:
     return getattr(item, name, default)
 
 
+def _unselected_without_progress(file: Any) -> bool:
+    """Require explicit, consistent selection flags and known zero progress."""
+    selected = _value(file, "selected")
+    priority = _value(file, "priority")
+    if selected is not None and selected is not False:
+        return False
+    if isinstance(priority, bool) or (priority is not None and priority != 0):
+        return False
+    if selected is not False and priority != 0:
+        return False
+    progress = _value(file, "progress")
+    return isinstance(progress, (int, float)) and not isinstance(progress, bool) and progress == 0
+
+
 def _path(value: Any) -> Optional[str]:
     """Normalize an absolute local path without requiring it to exist."""
     if not value:
@@ -125,7 +139,7 @@ def inspect_candidate(
         listed_by_path = _file_map(save_path, torrent_files)
     except ValueError as error:
         return CheckResult(False, str(error))
-    listed_by_name = {name: (file, path) for path, (name, file) in listed_by_path.items()}
+    ignored_paths = set()
     content_directory_ids = set()
     candidate_realpaths = {}
     candidate_file_ids = {}
@@ -134,7 +148,7 @@ def inspect_candidate(
     try:
         # The downloader deletes its own file list, not every file under save_path.
         # Inspect only those paths; unrelated files in the shared directory are retained.
-        for source in listed_by_path:
+        for source, (_, file) in listed_by_path.items():
             if not _inside(content_path, source) or (not content_is_directory and source != content_path):
                 return CheckResult(False, "种子内容路径与文件清单不一致")
             current = Path(source)
@@ -150,10 +164,14 @@ def inspect_candidate(
                 if str(current) == save_path:
                     break
                 current = current.parent
-            if os.path.lexists(source):
-                if not os.path.isfile(source):
+            try:
+                info = os.lstat(source)
+            except FileNotFoundError:
+                if _unselected_without_progress(file):
+                    ignored_paths.add(source)
+            else:
+                if not stat.S_ISREG(info.st_mode):
                     return CheckResult(False, "种子文件清单包含未知文件类型")
-                info = os.stat(source)
                 candidate_file_ids[(info.st_dev, info.st_ino)] = source
             candidate_realpaths[os.path.realpath(source)] = source
     except OSError:
@@ -200,11 +218,8 @@ def inspect_candidate(
             return CheckResult(False, f"无法核对共享目录种子的文件清单：{_task_label(other)}；内容路径：{other_path}")
 
     torrent_videos = {
-        path for name, (file, path) in listed_by_name.items()
-        if Path(name).suffix.lower() in media_exts
-        and (os.path.isfile(path)
-             or (_value(file, "selected", True) is not False
-                 and _value(file, "priority", 1) != 0))
+        path for path, (name, _) in listed_by_path.items()
+        if Path(name).suffix.lower() in media_exts and path not in ignored_paths
     }
     if not torrent_videos:
         return CheckResult(False, "种子中没有可核对的已下载媒体文件")
@@ -214,7 +229,7 @@ def inspect_candidate(
     registered_by_path = {}
     registered_relative_paths = set()
     for file in registered:
-        if _value(file, "downloader") != downloader or _value(file, "state") != 1:
+        if _value(file, "downloader") != downloader:
             return CheckResult(False, "下载文件记录不完整或所属下载器不匹配")
         name = _relative(_value(file, "filepath"))
         source = _path(_value(file, "fullpath"))
@@ -233,6 +248,14 @@ def inspect_candidate(
             return CheckResult(False, "种子文件与下载源路径不一致")
         registered_by_path[source] = file
         registered_relative_paths.add((recorded_save_path, name))
+    # qB selection changes do not update MoviePilot's original file records.
+    # Validate every identity above, but require transfers only for files that
+    # remain selected or may have data. Never alter MoviePilot's stored records.
+    registered_by_path = {
+        source: file for source, file in registered_by_path.items() if source not in ignored_paths
+    }
+    if any(_value(file, "state") != 1 for file in registered_by_path.values()):
+        return CheckResult(False, "下载文件记录不完整或所属下载器不匹配")
     registered_videos = {
         path for path in registered_by_path if Path(path).suffix.lower() in media_exts
     }
@@ -241,8 +264,7 @@ def inspect_candidate(
 
     histories = list(transfer_histories or [])
     missing_targets = []
-    for file in registered:
-        source = _path(_value(file, "fullpath"))
+    for source in registered_by_path:
         if not source or not os.path.isfile(source):
             return CheckResult(False, "下载源文件缺失或不可访问")
         if not _inside(save_path, source):
