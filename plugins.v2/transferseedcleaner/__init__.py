@@ -29,7 +29,7 @@ class TransferSeedCleaner(_PluginBase):
     plugin_name = "整理后清理做种"
     plugin_desc = "确认整种已安全入库后，删除下载器任务和下载文件。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
-    plugin_version = "1.3.3"
+    plugin_version = "1.3.4"
     plugin_author = "sunbroke555"
     author_url = "https://github.com/sunbroke555"
     plugin_config_prefix = "transferseedcleaner_"
@@ -222,7 +222,7 @@ class TransferSeedCleaner(_PluginBase):
             }, {
                 "component": "span", "props": {"class": "text-body-2 text-medium-emphasis"},
                 "text": "正在检查待处理种子…" if running else (
-                    "立即检查待处理列表；当前为预览模式，不会删除。" if self._dry_run
+                    "预览不删除种子和文件；已不存在的任务会移出待处理。" if self._dry_run
                     else "立即检查待处理列表，并清理符合条件的种子。"
                 ),
             }],
@@ -239,6 +239,7 @@ class TransferSeedCleaner(_PluginBase):
                 "component": "div", "props": {"class": "text-caption text-medium-emphasis mb-3"},
                 "text": (f"最近执行：{last_run.get('time')} · {last_run.get('message')} · "
                          f"检查 {last_run.get('checked', 0)} 个 · 清理 {last_run.get('deleted', 0)} 个 · "
+                         f"移出待处理 {last_run.get('removed', 0)} 个 · "
                          f"预览可清理 {last_run.get('ready', 0)} 个 · 保留 {last_run.get('retained', 0)} 个"),
             })
         page.append(self._record_tabs(history, pending))
@@ -314,7 +315,10 @@ class TransferSeedCleaner(_PluginBase):
         wrap = "white-space: normal; overflow-wrap: anywhere; overflow: visible; text-overflow: clip; -webkit-line-clamp: unset;"
         names = item.get("organized_names") or []
         subtitle = (names[0] + (f" · 共 {len(names)} 个已整理文件" if len(names) > 1 else "")) if names else "暂无成功整理名称"
-        status = "已清理" if deleted else self._pending_status(item)
+        if deleted:
+            status = "已移出待处理" if item.get("action") == "removed" else "已清理"
+        else:
+            status = self._pending_status(item)
         timestamp = item.get("time") if deleted else self._format_time(float(item["last_event"]))
         content = [{
             "component": "VListItemTitle", "props": {"class": "text-body-1 font-weight-medium", "style": wrap},
@@ -530,6 +534,42 @@ class TransferSeedCleaner(_PluginBase):
             })
             self.save_data("history", history[-100:])
 
+    def _remove_missing_pending(self, item: dict) -> bool:
+        """Retire a confirmed absent task without removing downloader data."""
+        with self._pending_lock:
+            if not self._enabled or item["downloader"] not in self._downloaders:
+                return False
+            pending = self._load_pending()
+            matches = [current for current in pending
+                       if current["downloader"] == item["downloader"]
+                       and current["hash"].lower() == item["hash"].lower()]
+            if len(matches) != 1 or matches[0].get("last_event") != item.get("last_event"):
+                return False
+            current = matches[0]
+            pending.remove(current)
+            self.save_data("pending", pending)
+            history = self.get_data("history") or []
+            message = "下载器任务已不存在，已移出待处理（未删除文件）"
+            history.append({
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "downloader": current["downloader"],
+                "hash": current["hash"],
+                "name": current.get("name") or "",
+                "organized_names": list(current.get("organized_names") or []),
+                "action": "removed",
+                "message": message,
+            })
+            self.save_data("history", history[-100:])
+            logger.info(f"整理后清理做种 {self._task_label(current)}：{message}")
+            return True
+
+    @staticmethod
+    def _torrent_present(torrents: List[Any], item: dict) -> bool:
+        """Treat even duplicate matching tasks as present, never as absent."""
+        return any(getattr(torrent, "downloader", None) == item["downloader"]
+                   and str(getattr(torrent, "hash", "")).lower() == item["hash"].lower()
+                   for torrent in torrents)
+
     @staticmethod
     def _matching_torrent(torrents: List[Any], item: dict):
         """Require exactly one live task with the queued downloader and hash."""
@@ -616,7 +656,7 @@ class TransferSeedCleaner(_PluginBase):
     def scan_pending(self) -> dict:
         """Reconcile queued torrents and remove only candidates that pass every check."""
         result = {"success": True, "message": "检查完成", "checked": 0,
-                  "deleted": 0, "ready": 0, "retained": 0}
+                  "deleted": 0, "removed": 0, "ready": 0, "retained": 0}
         if not self._enabled:
             return dict(result, success=False, message="请先启用插件")
         if not self._downloaders:
@@ -625,7 +665,9 @@ class TransferSeedCleaner(_PluginBase):
             return dict(result, success=False, message="正在检查中，请稍后查看结果")
         preview = self._dry_run
         try:
-            pending = self._load_pending()
+            with self._pending_lock:
+                # Preserve this scan's event generation even if storage returns shared dicts.
+                pending = [dict(item) for item in self._load_pending()]
             result["retained"] = len(pending)
             if not pending:
                 result["message"] = "暂无待处理种子"
@@ -653,6 +695,23 @@ class TransferSeedCleaner(_PluginBase):
                     self._set_reason(item, "仅支持 qBittorrent 和 Transmission 下载任务")
                     continue
                 try:
+                    if not self._torrent_present(all_torrents, item):
+                        # Confirm absence using another successful inventory, not a failed lookup.
+                        confirmed = self._snapshot_torrents()
+                        if confirmed is None:
+                            self._set_reason(item, "无法确认下载器任务已移除，保留待处理")
+                            continue
+                        confirmed_torrents, confirmed_types = confirmed
+                        if confirmed_types.get(item["downloader"]) not in ("qbittorrent", "transmission"):
+                            self._set_reason(item, "下载器不可用或类型变化，保留待处理")
+                            continue
+                        if self._torrent_present(confirmed_torrents, item):
+                            self._set_reason(item, "下载器任务重新出现，等待下次复核")
+                            continue
+                        if self._remove_missing_pending(item):
+                            result["removed"] += 1
+                            result["retained"] -= 1
+                        continue
                     inspection = self._inspect_pending(item, all_torrents, download_oper, transfer_oper)
                     if not inspection.ready:
                         self._set_reason(item, inspection.reason)

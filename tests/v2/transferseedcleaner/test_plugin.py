@@ -1109,3 +1109,286 @@ def test_preview_run_cannot_begin_deleting_if_preview_is_disabled_mid_scan(runti
     assert result["retained"] == 1
     assert plugin.get_data("pending")[0]["reason"] == "预览：符合删除条件"
     chain.remove_torrents.assert_not_called()
+
+
+@pytest.mark.parametrize("entrypoint", ["scan_pending", "run_now"])
+@pytest.mark.parametrize("preview", [False, True])
+def test_confirmed_missing_torrent_leaves_pending_without_deleting_files(
+    runtime, plugin_module, entrypoint, preview
+):
+    plugin, chain, event = runtime
+    plugin._dry_run = preview
+    history = plugin_module.DownloadHistoryOper().get_by_hash.return_value
+    history.torrent_name = "Show.S01.Complete.1080p"
+    transfer = plugin_module.TransferHistoryOper().list_by_hash.return_value[0]
+    source, destination = Path(transfer.src), Path(transfer.dest)
+    plugin.on_transfer_complete(event)
+    plugin_module.DownloaderHelper.downloader.get_torrents.return_value = ([], False)
+    chain.list_torrents.return_value = []
+
+    result = getattr(plugin, entrypoint)()
+
+    assert result["success"] is True
+    assert result["checked"] == 1
+    assert result["removed"] == 1
+    assert result["deleted"] == result["ready"] == result["retained"] == 0
+    assert plugin.get_data("pending") == []
+    assert plugin.get_data("last_run")["removed"] == 1
+    record = plugin.get_data("history")[-1]
+    assert record["action"] == "removed"
+    assert record["message"] == "下载器任务已不存在，已移出待处理（未删除文件）"
+    assert record["name"] == history.torrent_name
+    assert record["organized_names"] == [destination.name]
+    assert record["downloader"] == "qb" and record["hash"] == "abc123"
+    assert record["message"] in _page_text(plugin.get_page())
+    assert plugin_module.DownloaderHelper.downloader.get_torrents.call_count == 2
+    assert chain.list_torrents.call_count == 2
+    chain.torrent_files.assert_not_called()
+    chain.remove_torrents.assert_not_called()
+    assert source.read_bytes() == destination.read_bytes() == b"downloaded video"
+
+    repeated = getattr(plugin, entrypoint)()
+    assert repeated["removed"] == repeated["deleted"] == repeated["checked"] == 0
+    assert len(plugin.get_data("history")) == 1
+
+
+def test_missing_and_live_tasks_have_separate_removal_and_deletion_counts(runtime, plugin_module):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(plugin_module.Event({
+        "downloader": "qb", "download_hash": "already-removed",
+        "transferinfo": SimpleNamespace(success=True),
+    }))
+    plugin.on_transfer_complete(event)
+
+    result = plugin.run_now()
+
+    assert result["checked"] == 2
+    assert result["removed"] == result["deleted"] == 1
+    assert result["retained"] == 0
+    assert plugin.get_data("pending") == []
+    assert [item["action"] for item in plugin.get_data("history")] == ["removed", "deleted"]
+    chain.remove_torrents.assert_called_once_with(hashs="abc123", delete_file=True, downloader="qb")
+
+
+@pytest.mark.parametrize("unavailable", [
+    "inactive", "error_flag", "exception", "no_response", "no_config",
+    "no_service", "unsupported", "raw_has_task", "normalized_has_task",
+])
+def test_missing_task_is_retained_unless_downloader_absence_is_reliable(
+    runtime, plugin_module, monkeypatch, unavailable
+):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    existing_torrent = chain.list_torrents.return_value[0]
+    downloader = plugin_module.DownloaderHelper.downloader
+    downloader.get_torrents.return_value = ([], False)
+    chain.list_torrents.return_value = []
+    if unavailable == "inactive":
+        downloader.is_inactive.return_value = True
+    elif unavailable == "error_flag":
+        downloader.get_torrents.return_value = ([], True)
+    elif unavailable == "exception":
+        downloader.get_torrents.side_effect = RuntimeError("downloader unavailable")
+    elif unavailable == "no_response":
+        downloader.get_torrents.return_value = (None, False)
+    elif unavailable == "no_config":
+        monkeypatch.setattr(plugin_module.DownloaderHelper, "get_configs", lambda self: {})
+    elif unavailable == "no_service":
+        monkeypatch.setattr(plugin_module.DownloaderHelper, "get_services", lambda self: {})
+    elif unavailable == "unsupported":
+        plugin_module.DownloaderHelper.service_type = "rtorrent"
+    elif unavailable == "raw_has_task":
+        downloader.get_torrents.return_value = ([SimpleNamespace(hash="abc123")], False)
+    else:
+        chain.list_torrents.return_value = [existing_torrent]
+
+    result = plugin.run_now()
+
+    assert result["removed"] == result["deleted"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    assert plugin.get_data("history") is None
+    chain.remove_torrents.assert_not_called()
+
+
+def test_duplicate_matching_torrents_are_not_mistaken_for_absence(runtime):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    chain.list_torrents.return_value.append(copy.copy(chain.list_torrents.return_value[0]))
+
+    result = plugin.run_now()
+
+    assert result["removed"] == result["deleted"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    assert plugin.get_data("history") is None
+    chain.remove_torrents.assert_not_called()
+
+
+def test_missing_task_that_reappears_during_confirmation_is_retained(runtime, plugin_module):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    existing_torrent = chain.list_torrents.return_value[0]
+    downloader = plugin_module.DownloaderHelper.downloader
+    downloader.get_torrents.side_effect = [([], False), ([SimpleNamespace(hash="abc123")], False)]
+    chain.list_torrents.side_effect = [[], [existing_torrent]]
+
+    result = plugin.run_now()
+
+    assert downloader.get_torrents.call_count == 2
+    assert result["removed"] == result["deleted"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    assert plugin.get_data("history") is None
+    chain.remove_torrents.assert_not_called()
+
+
+@pytest.mark.parametrize("failure", ["error_flag", "exception", "mismatch"])
+def test_missing_task_is_retained_if_confirmation_fails(runtime, plugin_module, failure):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    existing_torrent = chain.list_torrents.return_value[0]
+    downloader = plugin_module.DownloaderHelper.downloader
+    chain.list_torrents.return_value = []
+    if failure == "error_flag":
+        downloader.get_torrents.side_effect = [([], False), ([], True)]
+    elif failure == "exception":
+        downloader.get_torrents.side_effect = [([], False), RuntimeError("connection lost")]
+    else:
+        downloader.get_torrents.return_value = ([], False)
+        chain.list_torrents.side_effect = [[], [existing_torrent]]
+
+    result = plugin.run_now()
+
+    assert downloader.get_torrents.call_count == 2
+    assert result["removed"] == result["deleted"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    assert plugin.get_data("history") is None
+    chain.remove_torrents.assert_not_called()
+
+
+def test_new_transfer_event_during_missing_task_confirmation_preserves_pending(
+    runtime, plugin_module, monkeypatch
+):
+    plugin, chain, event = runtime
+    monkeypatch.setattr(plugin_module.time, "time", lambda: 100.0)
+    plugin.on_transfer_complete(event)
+    downloader = plugin_module.DownloaderHelper.downloader
+    downloader.get_torrents.return_value = ([], False)
+    chain.list_torrents.return_value = []
+    original_snapshot = plugin._snapshot_torrents
+    snapshots = 0
+
+    def snapshot_with_new_event():
+        nonlocal snapshots
+        snapshot = original_snapshot()
+        snapshots += 1
+        if snapshots == 2:
+            monkeypatch.setattr(plugin_module.time, "time", lambda: 200.0)
+            plugin.on_transfer_complete(event)
+        return snapshot
+
+    monkeypatch.setattr(plugin, "_snapshot_torrents", snapshot_with_new_event)
+
+    result = plugin.run_now()
+
+    assert snapshots == 2
+    assert result["removed"] == result["deleted"] == 0
+    assert result["retained"] == 1
+    pending = plugin.get_data("pending")
+    assert len(pending) == 1 and pending[0]["last_event"] == 200.0
+    assert pending[0]["reason"] == plugin._waiting_reason
+    assert plugin.get_data("history") is None
+    chain.remove_torrents.assert_not_called()
+
+
+@pytest.mark.parametrize("change", ["disabled", "unselected"])
+def test_missing_task_removal_rechecks_enabled_and_selection_after_confirmation(
+    runtime, plugin_module, monkeypatch, change
+):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    plugin_module.DownloaderHelper.downloader.get_torrents.return_value = ([], False)
+    chain.list_torrents.return_value = []
+    original_snapshot = plugin._snapshot_torrents
+    snapshots = 0
+
+    def snapshot_with_reconfiguration():
+        nonlocal snapshots
+        snapshot = original_snapshot()
+        snapshots += 1
+        if snapshots == 2:
+            plugin.init_plugin({
+                "enabled": change != "disabled", "dry_run": False,
+                "downloaders": [] if change == "unselected" else ["qb"],
+            })
+        return snapshot
+
+    monkeypatch.setattr(plugin, "_snapshot_torrents", snapshot_with_reconfiguration)
+
+    result = plugin.run_now()
+
+    assert snapshots == 2
+    assert result["removed"] == result["deleted"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    assert plugin.get_data("history") is None
+    chain.remove_torrents.assert_not_called()
+
+
+def test_missing_task_identity_includes_downloader(runtime, plugin_module, monkeypatch):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    other_torrent = copy.copy(chain.list_torrents.return_value[0])
+    other_torrent.downloader = "other-qb"
+    chain.list_torrents.return_value = [other_torrent]
+    downloader = plugin_module.DownloaderHelper.downloader
+    downloader.get_torrents.return_value = ([], False)
+    other_downloader = SimpleNamespace(
+        is_inactive=MagicMock(return_value=False),
+        get_torrents=MagicMock(return_value=([SimpleNamespace(hash="abc123")], False)),
+    )
+    helper = SimpleNamespace(
+        get_configs=lambda: {
+            "qb": SimpleNamespace(type="qbittorrent", enabled=True),
+            "other-qb": SimpleNamespace(type="qbittorrent", enabled=True),
+        },
+        get_services=lambda: {
+            "qb": SimpleNamespace(type="qbittorrent", instance=downloader),
+            "other-qb": SimpleNamespace(type="qbittorrent", instance=other_downloader),
+        },
+    )
+    monkeypatch.setattr(plugin_module, "DownloaderHelper", lambda: helper)
+
+    result = plugin.run_now()
+
+    assert result["removed"] == 1 and result["deleted"] == 0
+    assert plugin.get_data("pending") == []
+    assert plugin.get_data("history")[-1]["downloader"] == "qb"
+    chain.remove_torrents.assert_not_called()
+
+
+def test_pending_for_removed_config_is_retained_when_other_downloaders_are_healthy(
+    runtime, plugin_module, monkeypatch
+):
+    plugin, chain, event = runtime
+    plugin.on_transfer_complete(event)
+    chain.list_torrents.return_value = []
+    other_downloader = SimpleNamespace(
+        is_inactive=MagicMock(return_value=False),
+        get_torrents=MagicMock(return_value=([], False)),
+    )
+    helper = SimpleNamespace(
+        get_configs=lambda: {"other-qb": SimpleNamespace(type="qbittorrent", enabled=True)},
+        get_services=lambda: {"other-qb": SimpleNamespace(type="qbittorrent", instance=other_downloader)},
+    )
+    monkeypatch.setattr(plugin_module, "DownloaderHelper", lambda: helper)
+
+    result = plugin.run_now()
+
+    assert result["removed"] == result["deleted"] == 0
+    assert result["retained"] == 1
+    assert len(plugin.get_data("pending")) == 1
+    assert plugin.get_data("history") is None
+    chain.remove_torrents.assert_not_called()
