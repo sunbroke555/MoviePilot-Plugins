@@ -5,6 +5,7 @@ import time
 from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Tuple
+from uuid import uuid4
 
 from apscheduler.triggers.interval import IntervalTrigger
 from fastapi import Depends
@@ -28,7 +29,7 @@ class TransferSeedCleaner(_PluginBase):
     plugin_name = "整理后清理做种"
     plugin_desc = "确认整种已安全入库后，删除下载器任务和下载文件。"
     plugin_icon = "https://raw.githubusercontent.com/jxxghp/MoviePilot-Plugins/main/icons/clean.png"
-    plugin_version = "1.3.2"
+    plugin_version = "1.3.3"
     plugin_author = "sunbroke555"
     author_url = "https://github.com/sunbroke555"
     plugin_config_prefix = "transferseedcleaner_"
@@ -193,7 +194,7 @@ class TransferSeedCleaner(_PluginBase):
         }
 
     def get_page(self) -> List[dict]:
-        """Show flat title/subtitle lists and an authenticated run-now action."""
+        """Show history-first record tabs and an authenticated run-now action."""
         pending = sorted(self._load_pending(), key=lambda item: float(item["last_event"]), reverse=True)
         history = list(reversed((self.get_data("history") or [])[-100:]))
         target_names = "、".join(sorted(self._downloaders)) or "未选择"
@@ -240,13 +241,59 @@ class TransferSeedCleaner(_PluginBase):
                          f"检查 {last_run.get('checked', 0)} 个 · 清理 {last_run.get('deleted', 0)} 个 · "
                          f"预览可清理 {last_run.get('ready', 0)} 个 · 保留 {last_run.get('retained', 0)} 个"),
             })
-        page.extend([
-            self._record_section("待处理", pending),
-            self._record_section("清理记录", history, deleted=True),
-        ])
+        page.append(self._record_tabs(history, pending))
         return page
 
-    def _record_section(self, title: str, items: List[dict], deleted: bool = False) -> dict:
+    def _record_tabs(self, history: List[dict], pending: List[dict]) -> dict:
+        # V2 PageRender does not bind shared models between VTabs and VWindow.
+        # Native radio controls keep these two views local, keyboard-accessible,
+        # and independent of plugin configuration or API calls.
+        group = f"transferseedcleaner-tabs-{uuid4().hex}"
+        history_id, pending_id = f"{group}-history", f"{group}-pending"
+        selected = ", ".join(f'#{tab}:checked ~ .record-tab-labels label[for="{tab}"]'
+                             for tab in (history_id, pending_id))
+        focused = ", ".join(f'#{tab}:focus-visible ~ .record-tab-labels label[for="{tab}"]'
+                            for tab in (history_id, pending_id))
+        styles = f"""
+#{group} {{ position: relative; }}
+#{group} > input {{ position: absolute; width: 1px; height: 1px; opacity: 0; }}
+#{group} > .record-tab-labels {{ display: flex; margin-bottom: 12px; border-bottom: 1px solid rgba(var(--v-theme-on-surface), .12); }}
+#{group} > .record-tab-labels label {{ flex: 1; padding: 12px 16px; text-align: center; cursor: pointer; border-bottom: 2px solid transparent; color: rgba(var(--v-theme-on-surface), .65); }}
+{selected} {{ color: rgb(var(--v-theme-primary)); border-bottom-color: rgb(var(--v-theme-primary)); }}
+{focused} {{ outline: 2px solid rgb(var(--v-theme-primary)); outline-offset: -4px; }}
+#{history_id}:not(:checked) ~ .record-history, #{pending_id}:not(:checked) ~ .record-pending {{ display: none; }}
+"""
+        return {
+            "component": "div",
+            "props": {"id": group, "role": "group", "aria-label": "清理记录与待处理"},
+            "content": [
+                {"component": "style", "text": styles},
+                {"component": "input", "props": {
+                    "type": "radio", "name": group, "id": history_id, "value": "history",
+                    "checked": True, "aria-controls": f"{history_id}-panel",
+                }},
+                {"component": "input", "props": {
+                    "type": "radio", "name": group, "id": pending_id, "value": "pending",
+                    "aria-controls": f"{pending_id}-panel",
+                }},
+                {"component": "div", "props": {"class": "record-tab-labels text-body-1"}, "content": [
+                    {"component": "label", "props": {"for": history_id, "id": f"{history_id}-label"},
+                     "text": f"清理记录 · {len(history)}"},
+                    {"component": "label", "props": {"for": pending_id, "id": f"{pending_id}-label"},
+                     "text": f"待处理 · {len(pending)}"},
+                ]},
+                {"component": "div", "props": {
+                    "class": "record-history", "id": f"{history_id}-panel", "role": "region",
+                    "aria-labelledby": f"{history_id}-label",
+                }, "content": [self._record_list(history, deleted=True)]},
+                {"component": "div", "props": {
+                    "class": "record-pending", "id": f"{pending_id}-panel", "role": "region",
+                    "aria-labelledby": f"{pending_id}-label",
+                }, "content": [self._record_list(pending)]},
+            ],
+        }
+
+    def _record_list(self, items: List[dict], deleted: bool = False) -> dict:
         rows = []
         for item in items:
             if rows:
@@ -255,19 +302,12 @@ class TransferSeedCleaner(_PluginBase):
                 }})
             rows.append(self._record_row(item, deleted))
         if not rows:
-            content = [{"component": "div", "props": {"class": "text-body-2 text-medium-emphasis py-2"},
-                        "text": "暂无清理记录" if deleted else "暂无待处理种子"}]
-        else:
-            content = [{
-                "component": "VList",
-                "props": {"density": "compact", "style": f"max-height: {360 if deleted else 480}px; overflow-y: auto;"},
-                "content": rows,
-            }]
+            return {"component": "div", "props": {"class": "text-body-2 text-medium-emphasis py-2"},
+                    "text": "暂无清理记录" if deleted else "暂无待处理种子"}
         return {
-            "component": "VCard",
-            "props": {"variant": "outlined", "class": "mb-3"},
-            "content": [{"component": "VCardTitle", "props": {"class": "text-subtitle-1"}, "text": f"{title} · {len(items)}"},
-                        {"component": "VCardText", "content": content}],
+            "component": "VList",
+            "props": {"density": "compact", "style": "max-height: 480px; overflow-y: auto;"},
+            "content": rows,
         }
 
     def _record_row(self, item: dict, deleted: bool) -> dict:
